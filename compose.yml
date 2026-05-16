@@ -1,0 +1,20 @@
+services:
+  komventory:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: komventory:dev
+    container_name: komventory
+    volumes:
+      - ./data:/data
+      - ./src:/app/src         # hot-reload during dev
+    environment:
+      # Multilingual Whisper; pin to Czech to skip detection per clip.
+      KOMVENTORY_WHISPER_MODEL: medium
+      KOMVENTORY_WHISPER_LANG: cs
+      # Compute type: int8 is fastest on CPU; float16 if you wire up a GPU.
+      KOMVENTORY_WHISPER_COMPUTE: int8
+    restart: unless-stopped
+    # Default: watch inbox/. Override for one-shot:
+    #   docker compose run --rm komventory komventory ingest
+    command: ["komventory", "watch"]

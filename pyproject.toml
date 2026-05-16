@@ -1,0 +1,21 @@
+[project]
+name = "komventory"
+version = "0.1.0"
+description = "Personal/community inventory: append-only timestamped event log fed by Whisper transcription of phone audio/video."
+authors = [
+    { name = "Jindrich Kolman", email = "kolman.jindrich@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.1",
+    "watchdog>=4.0",
+    "faster-whisper>=1.0",
+    "rich>=13.7",
+]
+
+[project.scripts]
+komventory = "komventory.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.10.2,<0.11.0"]
+build-backend = "uv_build"

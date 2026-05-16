@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.venv/
+.uv/
+.python-version
+
+# Mutable state — personal data lives outside git.
+# Override per-subdir with !.gitkeep so the layout is still tracked.
+data/*
+!data/.gitkeep
+!data/log/
+data/log/*
+!data/log/.gitkeep
+!data/inbox/
+data/inbox/*
+!data/inbox/.gitkeep
+!data/inbox/audio/
+!data/inbox/video/
+!data/inbox/openclaw/
+!data/inbox/imports/
+data/inbox/audio/*
+data/inbox/video/*
+data/inbox/openclaw/*
+data/inbox/imports/*
+!data/inbox/audio/.gitkeep
+!data/inbox/video/.gitkeep
+!data/inbox/openclaw/.gitkeep
+!data/inbox/imports/.gitkeep
