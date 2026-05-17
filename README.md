@@ -64,4 +64,4 @@ uv run komventory paths
 
 ## Whisper model
 
-Default `medium`, multilingual, pinned to Czech (`KOMVENTORY_WHISPER_LANG=cs`). Override in `compose.yml` if you want `large-v3` (slower, better) or `small` (faster, worse).
+Default `large-v3`, multilingual, pinned to Czech (`KOMVENTORY_WHISPER_LANG=cs`). On CPU with `int8` expect ~1–3× realtime; a backlog of phone videos can take hours. Override in `compose.yml` to `medium`/`small`/`base` for faster (lower quality) runs, or set `KOMVENTORY_WHISPER_DEVICE=cuda` if you have a GPU.

@@ -11,6 +11,16 @@ dependencies = [
     "watchdog>=4.0",
     "faster-whisper>=1.0",
     "rich>=13.7",
+    "markdown>=3.6",
+]
+
+[project.optional-dependencies]
+# Host-only extras for one-time CT2 conversion of HF community Whisper finetunes
+# (e.g. Czech-tuned models). Not installed in the Docker image to keep it slim;
+# enable on the host with `uv sync --extra convert`.
+convert = [
+    "transformers>=4.44",
+    "torch>=2.1",
 ]
 
 [project.scripts]

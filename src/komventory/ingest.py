@@ -1,20 +1,48 @@
-"""Take a file from inbox, produce a log entry, move attachments under log/media/."""
+"""Take a file from inbox, produce a log entry, route attachments under log/media/.
+
+Inbox subdirs come in two flavours:
+  - "owned" (openclaw, imports): we manage them; delete source after appending.
+  - "read-only" (audio, video): bind-mounted from phone-sync dirs; we mustn't
+    delete the source (it'd propagate back over Syncthing). We mark them in a
+    ledger and skip on subsequent runs.
+
+Subdir matching tolerates symlinks: each candidate inbox subdir is resolved and
+the file's resolved path is checked against each. This means `data/inbox/audio`
+can be a symlink to anywhere on the host without breaking subdir classification.
+"""
 
 from __future__ import annotations
 
 import logging
+import re
 import shutil
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, frames, transcribe
-from .log_io import Entry, append_entry
+from . import config, frames, timestamps, transcribe
+from .log_io import Entry, insert_entry
+from .state import ProcessedLedger
 
 log = logging.getLogger(__name__)
+
+READ_ONLY_SUBDIRS = {"audio", "video"}
+
+_SYNCTHING_TMP = re.compile(r"^(\.syncthing|~syncthing~).*\.tmp$")
+_ANDROID_TRASH = re.compile(r"^\.trashed-")
+_IGNORE_NAMES = {".gitkeep", ".stignore", ".processed.json"}
+_IGNORE_DIRS = {".stfolder", ".stversions", ".thumbnails"}
 
 
 class UnsupportedFile(Exception):
     pass
+
+
+def _should_ignore(path: Path) -> bool:
+    name = path.name
+    if name.startswith(".") or name in _IGNORE_NAMES:
+        return True
+    if _SYNCTHING_TMP.match(name) or _ANDROID_TRASH.match(name):
+        return True
+    return False
 
 
 def _classify(path: Path) -> str:
@@ -30,18 +58,34 @@ def _classify(path: Path) -> str:
     raise UnsupportedFile(f"no handler for {path.name}")
 
 
-def _inbox_subdir(path: Path, paths: config.Paths) -> str:
-    """Where in inbox/ did this file live? Used to bucket attachments under media/."""
-    try:
-        rel = path.resolve().relative_to(paths.inbox)
-    except ValueError:
-        return "misc"
-    return rel.parts[0] if rel.parts else "misc"
+def _subdir_map(paths: config.Paths) -> dict[str, Path]:
+    return {
+        "audio": paths.inbox_audio,
+        "video": paths.inbox_video,
+        "openclaw": paths.inbox_openclaw,
+        "imports": paths.inbox_imports,
+    }
 
 
-def _stage_attachment(src: Path, paths: config.Paths, subdir: str) -> Path:
-    """Copy src into log/media/<subdir>/ and return the destination path (relative to log_dir)."""
-    dest = paths.media / subdir / src.name
+def _locate(path: Path, paths: config.Paths) -> tuple[str, str] | None:
+    """Return (subdir_name, rel_under_subdir) or None if file isn't in any inbox subdir.
+
+    Resolves symlinks on both sides so a symlinked inbox subdir still matches.
+    """
+    resolved = path.resolve()
+    for name, root in _subdir_map(paths).items():
+        if not root.exists():
+            continue
+        try:
+            rel = resolved.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return name, str(rel)
+    return None
+
+
+def _stage_attachment(src: Path, paths: config.Paths, subdir: str, rel: str) -> Path:
+    dest = paths.media / subdir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.resolve() != src.resolve():
         shutil.copy2(src, dest)
@@ -52,61 +96,87 @@ def _rel_to_log(path: Path, paths: config.Paths) -> str:
     return str(path.resolve().relative_to(paths.log_dir.resolve()))
 
 
-def ingest_one(file_path: Path, paths: config.Paths | None = None) -> Entry | None:
-    """Process one inbox file, append an entry, and remove the source.
+def _make_ledger(paths: config.Paths) -> ProcessedLedger:
+    return ProcessedLedger(paths.inbox / ".processed.json")
 
-    Returns the appended Entry, or None if the file was skipped.
-    """
+
+def ingest_one(
+    file_path: Path,
+    paths: config.Paths | None = None,
+    *,
+    force: bool = False,
+    ledger: ProcessedLedger | None = None,
+) -> Entry | None:
     paths = paths or config.load_paths()
-    path = file_path.resolve()
+    ledger = ledger if ledger is not None else _make_ledger(paths)
+
+    path = file_path
     if not path.is_file():
         log.warning("skipping non-file: %s", path)
         return None
-    if path.name.startswith(".") or path.name == ".gitkeep":
+    if _should_ignore(path):
+        return None
+
+    located = _locate(path, paths)
+    if not located:
+        log.warning("file is outside known inbox subdirs: %s", path)
+        return None
+    subdir, rel = located
+    is_read_only = subdir in READ_ONLY_SUBDIRS
+    ledger_key = f"{subdir}/{rel}"
+
+    if is_read_only and not force and ledger.is_processed(ledger_key, path):
+        log.debug("already processed: %s", ledger_key)
         return None
 
     kind = _classify(path)
-    subdir = _inbox_subdir(path, paths)
-    now = datetime.now(timezone.utc).astimezone()
+    ts = timestamps.resolve(path)
+    source_label = f"{subdir}/{rel}"
 
     if kind == "note":
         body = path.read_text(encoding="utf-8").strip()
-        entry = Entry(timestamp=now, source=f"note@{subdir}/{path.name}", body=body)
+        entry = Entry(timestamp=ts, source=f"note@{source_label}", body=body)
 
     elif kind == "image":
-        staged = _stage_attachment(path, paths, subdir)
+        staged = _stage_attachment(path, paths, subdir, rel)
         entry = Entry(
-            timestamp=now,
-            source=f"image@{subdir}/{path.name}",
+            timestamp=ts,
+            source=f"image@{source_label}",
             body=f"(image: {path.name})",
             attachments=[_rel_to_log(staged, paths)],
         )
 
     elif kind == "audio":
-        staged = _stage_attachment(path, paths, subdir)
-        log.info("transcribing %s ...", path.name)
+        staged = _stage_attachment(path, paths, subdir, rel)
+        log.info("transcribing %s ...", source_label)
         text = transcribe.transcribe(staged) or "(no speech detected)"
         entry = Entry(
-            timestamp=now,
-            source=f"whisper@{subdir}/{path.name}",
+            timestamp=ts,
+            source=f"whisper@{source_label}",
             body=text,
             attachments=[_rel_to_log(staged, paths)],
         )
 
     elif kind == "video":
-        staged = _stage_attachment(path, paths, subdir)
-        frame_dir = paths.media / subdir / f"{path.stem}.frames"
-        audio_tmp = paths.media / subdir / f"{path.stem}.audio.wav"
-        log.info("extracting frames from %s ...", path.name)
-        frame_paths = frames.extract_frames(staged, frame_dir)
-        log.info("extracting audio + transcribing %s ...", path.name)
+        staged = _stage_attachment(path, paths, subdir, rel)
+        frame_dir = paths.media / subdir / f"{rel}.frames"
+        audio_tmp = paths.media / subdir / f"{rel}.audio.wav"
+        log.info("extracting frames from %s ...", source_label)
+        # Frames are nice-to-have; transcription is the actual content. Don't lose the
+        # whole entry if ffmpeg trips on a quirky video (Android colorspace etc).
+        try:
+            frame_paths = frames.extract_frames(staged, frame_dir)
+        except Exception as e:
+            log.warning("frame extraction failed for %s (%s) — continuing with audio only", source_label, e)
+            frame_paths = []
+        log.info("extracting audio + transcribing %s ...", source_label)
         frames.extract_audio_track(staged, audio_tmp)
         text = transcribe.transcribe(audio_tmp) or "(no speech detected)"
         audio_tmp.unlink(missing_ok=True)
         attachments = [_rel_to_log(staged, paths)] + [_rel_to_log(f, paths) for f in frame_paths]
         entry = Entry(
-            timestamp=now,
-            source=f"whisper+frames@{subdir}/{path.name}",
+            timestamp=ts,
+            source=f"whisper+frames@{source_label}",
             body=text,
             attachments=attachments,
         )
@@ -114,24 +184,78 @@ def ingest_one(file_path: Path, paths: config.Paths | None = None) -> Entry | No
     else:
         raise UnsupportedFile(kind)
 
-    append_entry(paths.log_md, entry)
-    path.unlink()  # remove from inbox only after entry is persisted
-    log.info("appended entry from %s", path.name)
+    insert_entry(paths.log_md, entry)
+
+    if is_read_only:
+        ledger.mark(ledger_key, path, entry.source)
+    else:
+        path.unlink()
+
+    log.info("appended entry from %s", source_label)
     return entry
 
 
-def sweep_inbox(paths: config.Paths | None = None) -> int:
-    """Process every file currently in inbox/. Returns count of entries appended."""
+def _walk_subdir(root: Path):
+    """Yield ingestable files under `root`, pruning ignored dirs/artifacts.
+
+    Works through a symlink: if `root` itself is a symlink to a directory,
+    Path.walk() walks the target. Nested symlinks are not followed by default,
+    which is what we want (avoids following .stversions backlinks etc.).
+    """
+    if not root.exists():
+        return
+    for dirpath, dirnames, filenames in root.walk():
+        dirnames[:] = [d for d in dirnames if d not in _IGNORE_DIRS and not d.startswith(".")]
+        for name in sorted(filenames):
+            f = dirpath / name
+            if f.is_file() and not _should_ignore(f):
+                yield f
+
+
+def rebuild_ledger(paths: config.Paths | None = None) -> int:
+    """Reconstruct .processed.json from log.md.
+
+    For every audio/video source file referenced by a `source:` tag in log.md,
+    write a ledger entry with the current file's (size, mtime). Useful after a
+    ledger was deleted, corrupted, or written with wrong ownership (e.g. by a
+    Docker container running as root).
+    """
     paths = paths or config.load_paths()
+    ledger_path = paths.inbox / ".processed.json"
+    # Directory is group-writable, so we can unlink even a file we don't own.
+    if ledger_path.exists():
+        ledger_path.unlink()
+    ledger = ProcessedLedger(ledger_path)
+
+    text = paths.log_md.read_text(encoding="utf-8") if paths.log_md.exists() else ""
+    referenced = set(re.findall(r" source: (\S+)", text))
+
     count = 0
-    for sub in (paths.inbox_audio, paths.inbox_video, paths.inbox_openclaw, paths.inbox_imports):
-        if not sub.is_dir():
+    for subdir_name, root in (("audio", paths.inbox_audio), ("video", paths.inbox_video)):
+        if not root.exists():
             continue
-        for f in sorted(sub.iterdir()):
-            if not f.is_file() or f.name.startswith(".") or f.name == ".gitkeep":
-                continue
+        for f in _walk_subdir(root):
             try:
-                if ingest_one(f, paths) is not None:
+                rel = str(f.resolve().relative_to(root.resolve()))
+            except ValueError:
+                continue
+            key = f"{subdir_name}/{rel}"
+            tag = next((t for t in referenced if t.endswith(f"@{key}")), None)
+            if tag is None:
+                continue
+            ledger.mark(key, f, tag)
+            count += 1
+    return count
+
+
+def sweep_inbox(paths: config.Paths | None = None, *, force: bool = False) -> int:
+    paths = paths or config.load_paths()
+    ledger = _make_ledger(paths)
+    count = 0
+    for root in _subdir_map(paths).values():
+        for f in _walk_subdir(root):
+            try:
+                if ingest_one(f, paths, force=force, ledger=ledger) is not None:
                     count += 1
             except UnsupportedFile as e:
                 log.warning("skip: %s", e)

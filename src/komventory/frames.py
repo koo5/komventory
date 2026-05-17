@@ -9,14 +9,19 @@ from . import config
 
 
 def extract_frames(video_path: Path, out_dir: Path) -> list[Path]:
-    """One frame every config.VIDEO_FRAME_INTERVAL_S seconds. Returns paths in order."""
+    """One frame every config.VIDEO_FRAME_INTERVAL_S seconds. Returns paths in order.
+
+    `format=yuvj420p` in the filter chain handles Android videos that record in
+    "non full-range YUV" — mjpeg's encoder rejects those by default with cryptic
+    `ff_frame_thread_encoder_init failed` errors.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     pattern = out_dir / "frame-%04d.jpg"
     fps = 1.0 / config.VIDEO_FRAME_INTERVAL_S
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(video_path),
-        "-vf", f"fps={fps}",
+        "-vf", f"fps={fps},format=yuvj420p",
         "-q:v", "4",
         str(pattern),
     ]

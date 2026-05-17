@@ -4,8 +4,8 @@ __pycache__/
 .uv/
 .python-version
 
-# Mutable state — personal data lives outside git.
-# Override per-subdir with !.gitkeep so the layout is still tracked.
+# Mutable state — personal data and host-specific symlinks live outside git.
+# Track the layout via .gitkeep markers in dirs we own (not the symlinked ones).
 data/*
 !data/.gitkeep
 !data/log/
@@ -14,15 +14,9 @@ data/log/*
 !data/inbox/
 data/inbox/*
 !data/inbox/.gitkeep
-!data/inbox/audio/
-!data/inbox/video/
 !data/inbox/openclaw/
 !data/inbox/imports/
-data/inbox/audio/*
-data/inbox/video/*
 data/inbox/openclaw/*
 data/inbox/imports/*
-!data/inbox/audio/.gitkeep
-!data/inbox/video/.gitkeep
 !data/inbox/openclaw/.gitkeep
 !data/inbox/imports/.gitkeep

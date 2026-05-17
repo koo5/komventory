@@ -1,0 +1,16 @@
+# Serves data/log/ (mounted at /srv inside the container) over HTTP on :3410
+# so log.html can render media via relative URLs and you can browse the
+# media/ tree from a browser. Read-only mount, so any "writes" via the
+# browser are no-ops.
+
+:3410 {
+	root * /srv
+	encode gzip
+
+	# Convenience: hitting the bare host:port lands on the rendered log.
+	@root path /
+	redir @root /log.html
+
+	# Directory browsing so /media/, /media/video/, etc. are navigable.
+	file_server browse
+}
