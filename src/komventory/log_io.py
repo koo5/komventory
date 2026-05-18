@@ -35,7 +35,11 @@ class Entry:
         ts = self.timestamp.isoformat(timespec="seconds")
         header = f"## {ts} — source: {self.source}"
         if self.loc:
-            header += f' — loc: "{self.loc}"'
+            # The Python attribute is `loc` for historical reasons; the
+            # rendered field name is `where:` — a single mixed-meaning slot
+            # for whatever weakly anchors this entry in space (container,
+            # place, room, "Honzova garáž", whatever).
+            header += f' — where: "{self.loc}"'
         lines = [header, "", self.body.strip()]
         if self.attachments:
             lines.append("")
@@ -60,8 +64,19 @@ def _find_insert_offset(text: str, ts: datetime) -> int:
     return len(text)
 
 
+# log.md is kept read-only between writes (invariant) so that ad-hoc tools and
+# hand-edits don't silently slip in while the watcher is mid-ingest. Writers go
+# through the lock + this module, which restores the invariant after each write.
+LOG_MD_READONLY_MODE = 0o444
+
+
 def _atomic_write(path: Path, content: str) -> None:
-    """Write content to path via a same-dir tempfile + os.replace."""
+    """Write content to path via a same-dir tempfile + os.replace.
+
+    Always leaves the destination at LOG_MD_READONLY_MODE on success so that
+    log.md is read-only between writes regardless of how it got into the FS
+    (fresh write, pull-from-remote, manual touch).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".log.", suffix=".md.tmp", dir=str(path.parent))
     try:
@@ -71,6 +86,11 @@ def _atomic_write(path: Path, content: str) -> None:
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
+    try:
+        os.chmod(path, LOG_MD_READONLY_MODE)
+    except OSError:
+        # Non-fatal: the write itself succeeded, just leaves perms wrong.
+        pass
 
 
 def insert_entry(log_md: Path, entry: Entry) -> None:

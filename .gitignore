@@ -20,3 +20,4 @@ data/inbox/openclaw/*
 data/inbox/imports/*
 !data/inbox/openclaw/.gitkeep
 !data/inbox/imports/.gitkeep
+.claude/

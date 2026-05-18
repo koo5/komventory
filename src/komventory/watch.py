@@ -42,7 +42,7 @@ class _IngestHandler(FileSystemEventHandler):
                         render_html.render(self.paths.log_md)
                     except Exception:
                         log.exception("auto-render failed; log.md is fine, log.html may be stale")
-                    sync.commit(self.paths.log_dir, f"ingest: {entry.source}")
+                    sync.commit_safe(self.paths.log_dir, f"ingest: {entry.source}")
         except ingest.UnsupportedFile as e:
             log.warning("skip: %s", e)
         except Exception:
@@ -68,7 +68,7 @@ def run_forever() -> None:
                 render_html.render(paths.log_md)
             except Exception:
                 log.exception("auto-render failed; log.md is fine, log.html may be stale")
-            sync.commit(paths.log_dir, f"ingest: initial sweep ({n} entries)")
+            sync.commit_safe(paths.log_dir, f"ingest: initial sweep ({n} entries)")
     if n:
         log.info("initial sweep: %d entries", n)
 

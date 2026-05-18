@@ -9,7 +9,9 @@ converted with the `markdown` package and lightly themed.
 from __future__ import annotations
 
 import html
+import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +22,8 @@ from . import config
 _ENTRY_RE = re.compile(
     r"^## (?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?) "
     r"— source: (?P<source>\S+)"
-    r'(?: — loc: "(?P<loc>[^"]+)")?\s*$',
+    # Accept legacy `loc:` and current `where:` — they mean the same thing.
+    r'(?: — (?:loc|where): "(?P<where>[^"]+)")?\s*$',
     re.MULTILINE,
 )
 
@@ -80,7 +83,7 @@ def _parse_entries(text: str) -> list[dict]:
             {
                 "ts": m.group("ts"),
                 "source": m.group("source"),
-                "loc": m.group("loc"),
+                "where": m.group("where"),
                 "body": body,
             }
         )
@@ -102,9 +105,9 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
   article header {{ font-size: 0.85em; color: #777; display: flex; gap: 0.75em;
                     flex-wrap: wrap; margin-bottom: 0.4rem; }}
   article header time {{ font-variant-numeric: tabular-nums; color: #555; }}
-  article header .loc {{ color: #036; font-weight: 600; }}
+  article header .where {{ color: #036; font-weight: 600; }}
   @media (prefers-color-scheme: dark) {{
-    article header .loc {{ color: #6cf; }}
+    article header .where {{ color: #6cf; }}
   }}
   article header .source {{ font-family: ui-monospace, monospace; font-size: 0.9em;
                             color: #999; }}
@@ -165,7 +168,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 _ARTICLE_TEMPLATE = """<article id="{anchor}">
 <header>
   <time datetime="{ts}">{ts_display}</time>
-  {loc_html}
+  {where_html}
   <span class="source">{source}</span>
 </header>
 <div class="body">{body_html}</div>
@@ -189,9 +192,9 @@ def render(log_md_path: Path, out_path: Path | None = None) -> Path:
 
     articles: list[str] = []
     for i, e in enumerate(entries):
-        loc_html = (
-            f'<span class="loc">{html.escape(e["loc"], quote=True)}</span>'
-            if e["loc"]
+        where_html = (
+            f'<span class="where">{html.escape(e["where"], quote=True)}</span>'
+            if e["where"]
             else ""
         )
         articles.append(
@@ -199,7 +202,7 @@ def render(log_md_path: Path, out_path: Path | None = None) -> Path:
                 anchor=f"e{i:05d}",
                 ts=html.escape(e["ts"], quote=True),
                 ts_display=html.escape(_format_ts_display(e["ts"]), quote=True),
-                loc_html=loc_html,
+                where_html=where_html,
                 source=html.escape(e["source"], quote=True),
                 body_html=_body_to_html(e["body"]),
             )
@@ -210,5 +213,16 @@ def render(log_md_path: Path, out_path: Path | None = None) -> Path:
         rendered_at=datetime.now(tz=config.TIMEZONE).strftime("%Y-%m-%d %H:%M %Z"),
         articles="\n".join(articles),
     )
-    out_path.write_text(page, encoding="utf-8")
+    # Atomic write: write to a sibling tempfile + os.replace. Caddy (or any
+    # browser hitting log.html mid-render) sees either the old file or the new
+    # file, never a half-written one.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".log.", suffix=".html.tmp", dir=str(out_path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(page)
+        os.replace(tmp, out_path)
+    except Exception:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return out_path

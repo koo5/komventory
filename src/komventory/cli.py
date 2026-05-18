@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from . import config, ingest, import_gdoc as import_gdoc_mod, model_convert, render_html, sync, watch
+from . import config, ingest, import_gdoc as import_gdoc_mod, lock, model_convert, render_html, sync, watch
 from .sync import synced_lock
 
 
@@ -49,13 +49,13 @@ def cmd_ingest(path: Path | None, force: bool) -> None:
             n = ingest.sweep_inbox(paths, force=force)
             if n:
                 _render_safe(paths)
-                sync.commit(paths.log_dir, f"ingest: sweep ({n} entries)")
+                sync.commit_safe(paths.log_dir, f"ingest: sweep ({n} entries)")
             click.echo(f"appended {n} entries from inbox")
         else:
             result = ingest.ingest_one(path, paths, force=force)
             if result:
                 _render_safe(paths)
-                sync.commit(paths.log_dir, f"ingest: {result.source}")
+                sync.commit_safe(paths.log_dir, f"ingest: {result.source}")
             click.echo("appended 1 entry" if result else "skipped")
 
 
@@ -94,7 +94,7 @@ def cmd_import_gdoc(path: Path) -> None:
         n = import_gdoc_mod.import_gdoc(path, paths)
         if n:
             _render_safe(paths)
-            sync.commit(paths.log_dir, f"import-gdoc: {path.name} ({n} entries)")
+            sync.commit_safe(paths.log_dir, f"import-gdoc: {path.name} ({n} entries)")
     click.echo(f"imported {n} entries from {path}")
 
 
@@ -118,6 +118,27 @@ def cmd_paths() -> None:
         "cache_whisper",
     ):
         click.echo(f"{name:18s} {getattr(paths, name)}")
+
+
+@main.command("acquire-lock")
+@click.option("--purpose", default="manual", help="Tag stored in the lock file for visibility.")
+def cmd_acquire_lock(purpose: str) -> None:
+    """Acquire the komventory lock. Blocks until granted. Caller must release-lock later.
+
+    Note: the lock survives the lifetime of this command — same file-based
+    primitive as the in-process context manager. Useful for hook scripts that
+    need to bracket an external operation."""
+    paths = config.load_paths()
+    lock.acquire(paths, purpose=purpose)
+    click.echo(f"acquired (purpose={purpose})")
+
+
+@main.command("release-lock")
+def cmd_release_lock() -> None:
+    """Release the komventory lock iff held by this process+host."""
+    paths = config.load_paths()
+    lock.release(paths)
+    click.echo("released")
 
 
 @main.command("lock-status")

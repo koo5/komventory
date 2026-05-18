@@ -21,6 +21,7 @@ from typing import Iterator
 
 from . import config
 from .lock import komventory_lock
+from .log_io import LOG_MD_READONLY_MODE
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,27 @@ def commit(repo_path: Path, message: str) -> bool:
     return True
 
 
+def commit_safe(repo_path: Path, message: str) -> bool:
+    """Like `commit()` but swallows GitCommitFailed with a loud error log.
+
+    Why: a propagated commit failure leaves the working tree dirty. The next
+    `pull --no-rebase` against a dirty tree fails ("your local changes would be
+    overwritten"), and synced_lock enters a perpetual backoff loop the user
+    won't notice. We'd rather report the failure clearly and keep going — the
+    user fixes the git state by hand once.
+    """
+    try:
+        return commit(repo_path, message)
+    except GitCommitFailed as e:
+        log.error(
+            "git commit failed: %s\n"
+            "  log.md is modified-and-uncommitted in %s. Next pull will fail until you fix it.\n"
+            "  Recover with:  cd %s && git status   (resolve, then `git commit -- log.md`)",
+            e, repo_path, repo_path,
+        )
+        return False
+
+
 @contextmanager
 def synced_lock(paths: config.Paths, purpose: str = "write") -> Iterator[None]:
     """Acquire the komventory lock + pull data/log; yield with both in hand.
@@ -131,6 +153,15 @@ def synced_lock(paths: config.Paths, purpose: str = "write") -> Iterator[None]:
             except GitPullFailed as e:
                 log.warning("git pull failed: %s; retrying in %.0fs", e, backoff)
             else:
+                # Re-assert the read-only invariant on log.md: git doesn't track
+                # unix mode by default, so a pull may have landed it as 0644.
+                log_md = paths.log_md
+                if log_md.exists():
+                    try:
+                        import os as _os
+                        _os.chmod(log_md, LOG_MD_READONLY_MODE)
+                    except OSError:
+                        pass
                 yield
                 return
         time.sleep(backoff)

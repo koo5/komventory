@@ -11,6 +11,21 @@ Adapted from hillview/backend/tests/lock_util.py with two changes:
 Lock lives at `data/inbox/.lock`. The same path is visible to host and
 container via the `./data` bind mount, so they can coordinate. The file is
 JSON so a human inspecting `cat data/inbox/.lock` can see who's holding it.
+
+Known limitation — multiple containers with the same `hostname:`
+====================================================================
+`compose.yml` pins `hostname: komventory-container` for visibility, which
+means two concurrent `docker compose run --rm komventory ...` invocations
+would both identify as the same host. PID-alive checks are then *unsafe*:
+container A's PID 7 is in a different PID namespace from container B's PID 7,
+so `os.kill(7, 0)` from B can report ESRCH for A's alive process → stale →
+claim. Race.
+
+In practice we don't run concurrent container instances (one watcher +
+ad-hoc host commands is the model). If that pattern ever changes, the right
+fix is to encode `/proc/self/ns/pid` (the namespace inode) into the holder
+identity and only trust PID checks within the same namespace. Until then,
+this is a documented hazard.
 """
 
 from __future__ import annotations
@@ -113,6 +128,37 @@ def _try_claim_stale(path: Path, stale_holder: dict, purpose: str) -> bool:
         stale_holder.get("host"),
     )
     return True
+
+
+def acquire(paths: config.Paths, purpose: str = "write") -> None:
+    """Blocking, non-context-manager acquire. For shell verbs / Claude Code hooks.
+
+    Caller is responsible for calling `release(paths)` later. Same lock file,
+    same stale-recovery semantics as the context manager, so the two are
+    interchangeable from any process's POV.
+    """
+    cm = komventory_lock(paths, purpose=purpose)
+    cm.__enter__()
+    # We deliberately leak the context manager — the caller (a separate process)
+    # can't hold a Python object across exec boundaries. The lock file IS the
+    # state; `release()` just unlinks it.
+
+
+def release(paths: config.Paths) -> None:
+    """Best-effort release of a lock owned by this process+host."""
+    import os as _os
+    import socket as _socket
+    lock_path = paths.inbox / ".lock"
+    holder = _read_holder(lock_path)
+    if (
+        holder
+        and holder.get("pid") == _os.getpid()
+        and holder.get("host") == _socket.gethostname()
+    ):
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 @contextmanager
