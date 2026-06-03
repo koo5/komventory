@@ -73,19 +73,26 @@ def _read_holder(path: Path) -> dict | None:
         return None
 
 
-def _holder_payload(purpose: str) -> bytes:
-    return (
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "host": socket.gethostname(),
-                "purpose": purpose,
-                "acquired_at": datetime.now(tz=config.TIMEZONE).isoformat(timespec="seconds"),
-            },
-            ensure_ascii=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+def _holder_payload(
+    purpose: str,
+    session_id: str | None = None,
+    no_auto_claim: bool = False,
+) -> bytes:
+    payload: dict = {
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "purpose": purpose,
+        "acquired_at": datetime.now(tz=config.TIMEZONE).isoformat(timespec="seconds"),
+    }
+    if session_id is not None:
+        # Stable identifier across hook invocations within a Claude Code session,
+        # so hook-post can release a lock acquired by hook-pre (different PIDs).
+        payload["session_id"] = session_id
+    if no_auto_claim:
+        # Don't let the PID-alive heuristic auto-claim this lock as stale; the
+        # PID in the file is the (short-lived) hook process, not the holder.
+        payload["no_auto_claim"] = True
+    return (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _try_claim_stale(path: Path, stale_holder: dict, purpose: str) -> bool:
@@ -130,56 +137,39 @@ def _try_claim_stale(path: Path, stale_holder: dict, purpose: str) -> bool:
     return True
 
 
-def acquire(paths: config.Paths, purpose: str = "write") -> None:
-    """Blocking, non-context-manager acquire. For shell verbs / Claude Code hooks.
-
-    Caller is responsible for calling `release(paths)` later. Same lock file,
-    same stale-recovery semantics as the context manager, so the two are
-    interchangeable from any process's POV.
-    """
-    cm = komventory_lock(paths, purpose=purpose)
-    cm.__enter__()
-    # We deliberately leak the context manager — the caller (a separate process)
-    # can't hold a Python object across exec boundaries. The lock file IS the
-    # state; `release()` just unlinks it.
-
-
-def release(paths: config.Paths) -> None:
-    """Best-effort release of a lock owned by this process+host."""
-    import os as _os
-    import socket as _socket
-    lock_path = paths.inbox / ".lock"
-    holder = _read_holder(lock_path)
-    if (
-        holder
-        and holder.get("pid") == _os.getpid()
-        and holder.get("host") == _socket.gethostname()
-    ):
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+def _try_create_lock_file(
+    lock_path: Path,
+    purpose: str,
+    session_id: str | None = None,
+    no_auto_claim: bool = False,
+) -> bool:
+    """Atomic `O_CREAT|O_EXCL` create + payload write. Returns True on success."""
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        return False
+    try:
+        os.write(fd, _holder_payload(purpose, session_id=session_id, no_auto_claim=no_auto_claim))
+    finally:
+        os.close(fd)
+    return True
 
 
-@contextmanager
-def komventory_lock(paths: config.Paths, purpose: str = "write") -> Iterator[None]:
-    """Acquire a process-wide komventory write lock; release on context exit."""
+def _wait_and_acquire(
+    paths: config.Paths,
+    purpose: str,
+    session_id: str | None = None,
+    no_auto_claim: bool = False,
+) -> None:
+    """Blocking loop: create the lock file or wait/claim a stale one."""
     lock_path = paths.inbox / ".lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     my_host = socket.gethostname()
-    my_pid = os.getpid()
     warned = False
 
     while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-            try:
-                os.write(fd, _holder_payload(purpose))
-            finally:
-                os.close(fd)
-            break
-        except FileExistsError:
-            pass
+        if _try_create_lock_file(lock_path, purpose, session_id=session_id, no_auto_claim=no_auto_claim):
+            return
 
         holder = _read_holder(lock_path)
         if holder is None:
@@ -189,23 +179,84 @@ def komventory_lock(paths: config.Paths, purpose: str = "write") -> Iterator[Non
 
         same_host = holder.get("host") == my_host
         pid = holder.get("pid")
-        if same_host and isinstance(pid, int) and not _is_process_alive(pid):
+        if holder.get("no_auto_claim"):
+            # Holder explicitly opted out of stale recovery (typically a hook
+            # session). Wait until they release; manual `rm .lock` to break.
+            pass
+        elif same_host and isinstance(pid, int) and not _is_process_alive(pid):
             if _try_claim_stale(lock_path, holder, purpose):
-                break
+                return
             # Lost the race; another process claimed first. Retry.
             continue
 
         if not warned:
             log.info(
-                "waiting for komventory lock (held by pid=%s host=%s purpose=%s)%s",
+                "waiting for komventory lock (held by pid=%s host=%s purpose=%s session=%s)%s",
                 pid,
                 holder.get("host"),
                 holder.get("purpose"),
+                holder.get("session_id"),
                 "" if same_host else "; foreign host — will not auto-claim",
             )
             warned = True
         time.sleep(POLL_S)
 
+
+def acquire(
+    paths: config.Paths,
+    purpose: str = "write",
+    session_id: str | None = None,
+    no_auto_claim: bool = False,
+) -> None:
+    """Blocking, non-context-manager acquire. For shell verbs / Claude Code hooks.
+
+    Caller is responsible for calling `release(paths)` later. The lock file
+    persists on disk and is independent of this Python process — no generator
+    cleanup deletes it on exit.
+
+    `session_id` provides a stable identifier across processes (e.g., Claude
+    Code hook-pre vs hook-post run in different PIDs but share a session). When
+    set, release with the same session_id releases regardless of PID.
+    `no_auto_claim` disables PID-alive stale-recovery for this lock — required
+    for hook locks since the acquiring process exits immediately.
+    """
+    _wait_and_acquire(paths, purpose, session_id=session_id, no_auto_claim=no_auto_claim)
+
+
+def release(paths: config.Paths, session_id: str | None = None) -> bool:
+    """Release the lock. Returns True if we owned and released it, False otherwise.
+
+    Ownership: if `session_id` is provided, release iff the lock's session_id
+    matches. Otherwise fall back to PID+host match (for the in-process
+    context-manager case).
+    """
+    lock_path = paths.inbox / ".lock"
+    holder = _read_holder(lock_path)
+    if not holder:
+        return False
+    if session_id is not None:
+        owned = holder.get("session_id") == session_id
+    else:
+        owned = (
+            holder.get("pid") == os.getpid()
+            and holder.get("host") == socket.gethostname()
+        )
+    if not owned:
+        return False
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+    return True
+
+
+@contextmanager
+def komventory_lock(paths: config.Paths, purpose: str = "write") -> Iterator[None]:
+    """Acquire a process-wide komventory write lock; release on context exit."""
+    _wait_and_acquire(paths, purpose)
+    lock_path = paths.inbox / ".lock"
+    my_pid = os.getpid()
+    my_host = socket.gethostname()
     try:
         yield
     finally:

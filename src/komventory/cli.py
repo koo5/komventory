@@ -120,6 +120,80 @@ def cmd_paths() -> None:
         click.echo(f"{name:18s} {getattr(paths, name)}")
 
 
+def _read_hook_stdin() -> tuple[str | None, str | None]:
+    """Parse Claude Code's hook stdin JSON. Returns (file_path, session_id) or (None, None)."""
+    import json as _json
+    import sys as _sys
+    try:
+        data = _json.loads(_sys.stdin.read() or "{}")
+    except _json.JSONDecodeError:
+        return None, None
+    file_path = (data.get("tool_input") or {}).get("file_path")
+    session_id = data.get("session_id")
+    return file_path, session_id
+
+
+def _is_log_md(file_path: str | None, paths: config.Paths) -> bool:
+    if not file_path:
+        return False
+    try:
+        return Path(file_path).resolve() == paths.log_md.resolve()
+    except (FileNotFoundError, OSError):
+        return Path(file_path).name == paths.log_md.name
+
+
+@main.command("hook-pre-edit")
+def cmd_hook_pre_edit() -> None:
+    """PreToolUse hook for log.md: acquire lock, pull, chmod +w.
+
+    Reads Claude Code's hook JSON from stdin (file_path and session_id). No-op
+    for any path other than data/log/log.md. The lock uses the Claude session
+    id so hook-post-edit can release it regardless of process identity.
+    """
+    import os as _os
+    file_path, session_id = _read_hook_stdin()
+    paths = config.load_paths()
+    if not _is_log_md(file_path, paths):
+        return
+    lock.acquire(
+        paths,
+        purpose=f"claude-edit:{Path(file_path).name}",
+        session_id=session_id,
+        no_auto_claim=True,
+    )
+    try:
+        sync.pull(paths.log_dir)
+    except sync.GitPullFailed as e:
+        lock.release(paths, session_id=session_id)
+        click.echo(f"git pull failed: {e} — resolve and retry the edit", err=True)
+        raise SystemExit(1)
+    if paths.log_md.exists():
+        _os.chmod(paths.log_md, 0o644)
+    click.echo(f"unlocked {paths.log_md.name} for editing (session={session_id})")
+
+
+@main.command("hook-post-edit")
+def cmd_hook_post_edit() -> None:
+    """PostToolUse hook for log.md: render, chmod 444, commit, release lock.
+
+    Always runs full cleanup even if the Edit failed — leaves invariants in
+    the correct state regardless of what happened during the tool call.
+    """
+    import os as _os
+    file_path, session_id = _read_hook_stdin()
+    paths = config.load_paths()
+    if not _is_log_md(file_path, paths):
+        return
+    try:
+        _render_safe(paths)
+        if paths.log_md.exists():
+            _os.chmod(paths.log_md, 0o444)
+        sync.commit_safe(paths.log_dir, "claude edit")
+    finally:
+        lock.release(paths, session_id=session_id)
+    click.echo(f"re-locked {paths.log_md.name} and committed (session={session_id})")
+
+
 @main.command("acquire-lock")
 @click.option("--purpose", default="manual", help="Tag stored in the lock file for visibility.")
 def cmd_acquire_lock(purpose: str) -> None:
