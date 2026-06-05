@@ -54,6 +54,49 @@ services:
     #   docker compose run --rm komventory komventory ingest
     command: ["komventory", "watch"]
 
+  komventory-api:
+    # Reuses the watcher image — same Whisper model cache, same code, same env.
+    # The watcher and the API share data/ via the bind mount; cross-process
+    # writes are serialised by data/inbox/.lock (komventory's existing lock).
+    image: komventory:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: komventory-api
+    hostname: komventory-api
+    user: "1000:1000"
+    depends_on:
+      - komventory
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+      - ./frontend:/app/frontend:ro
+      - /home/koom/d/sync/a22-recordings/Recording:/sources/audio:ro
+      - /home/koom/d/sync/a22dcim/OpenCamera:/sources/video:ro
+      - /home/koom/log:/home/koom/log
+      - /home/koom/.gitconfig:/etc/gitconfig:ro
+      # API-key files (one file per key, name = env var, contents = key).
+      # qa.py reads these on demand only when the matching env var is missing.
+      - /home/koom/secrets/GEMINI_API_KEY:/run/secrets/GEMINI_API_KEY:ro
+    environment:
+      KOMVENTORY_INBOX_AUDIO: /sources/audio
+      KOMVENTORY_INBOX_VIDEO: /sources/video
+      KOMVENTORY_FRONTEND: /app/frontend
+      KOMVENTORY_QA_MODEL: gemini/gemini-2.5-flash
+      TZ: Europe/Prague
+      KOMVENTORY_TIMEZONE: Europe/Prague
+      GIT_AUTHOR_NAME: komventory
+      GIT_AUTHOR_EMAIL: komventory@container.local
+      GIT_COMMITTER_NAME: komventory
+      GIT_COMMITTER_EMAIL: komventory@container.local
+      KOMVENTORY_WHISPER_MODEL: mikr/whisper-large-v3-czech-cv13
+      KOMVENTORY_WHISPER_LANG: cs
+      KOMVENTORY_WHISPER_COMPUTE: int8
+    ports:
+      - "3411:3411"
+    restart: unless-stopped
+    command: ["komventory", "serve"]
+
   caddy:
     image: caddy:2-alpine
     container_name: komventory-caddy

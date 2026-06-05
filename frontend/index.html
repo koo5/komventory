@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d1f21">
+  <title>komventory</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <h1>komventory</h1>
+    <div class="status" id="status" data-testid="status">připraveno</div>
+  </header>
+
+  <main id="log" data-testid="log"></main>
+
+  <footer>
+    <form id="text-form" data-testid="text-form">
+      <input
+        type="text"
+        id="text-input"
+        data-testid="text-input"
+        placeholder="napiš poznámku nebo otázku…"
+        autocomplete="off"
+        autocapitalize="sentences">
+      <button type="submit" data-testid="send-text">↵</button>
+    </form>
+
+    <div class="controls">
+      <button id="rec-toggle" data-testid="rec-toggle" class="rec">🎙 záznam</button>
+      <canvas id="meter" data-testid="meter" width="240" height="36" aria-label="vstupní signál"></canvas>
+      <span id="speaking-dot" data-testid="speaking-dot" class="dot" title="mluvíš"></span>
+      <label class="opt">
+        <input type="checkbox" id="opt-tts" data-testid="opt-tts" checked>
+        <span>mluvit zpět</span>
+      </label>
+      <label class="opt">
+        <input type="checkbox" id="opt-ask" data-testid="opt-ask" checked>
+        <span>odpovídat na otázky</span>
+      </label>
+    </div>
+  </footer>
+
+  <!-- onnxruntime-web powers Silero VAD inference in the browser. -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.js"></script>
+  <!-- Silero VAD wrapper: detects speech start/end client-side, returns Float32 audio chunks. -->
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.24/dist/bundle.min.js"></script>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -117,3 +117,42 @@ def insert_entry(log_md: Path, entry: Entry) -> None:
 
 # Back-compat alias for callers still using the old name (gdoc importer etc.).
 append_entry = insert_entry
+
+
+_HEADER_PARSE_RE = re.compile(
+    r"^## (?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)"
+    r"(?:\s+—\s+source:\s+(?P<source>\S+))?"
+    r'(?:\s+—\s+where:\s+"(?P<where>[^"]*)")?'
+    r"\s*$",
+    re.MULTILINE,
+)
+
+_ATTACHMENT_RE = re.compile(r"!\[\[([^\]]+)\]\]")
+
+
+def iter_entries(text: str):
+    """Yield Entry objects parsed from log.md content, in file order (chronological).
+
+    Inverse of `Entry.render`. Tolerates unknown header decorations gracefully:
+    anything between `## <ts>` and end-of-line is matched optionally. Body is
+    the slice between this header and the next header (or EOF), with
+    attachments lifted out into `entry.attachments` and stripped from `body`.
+    """
+    matches = list(_HEADER_PARSE_RE.finditer(text))
+    for i, m in enumerate(matches):
+        try:
+            ts = datetime.fromisoformat(m.group("ts"))
+        except ValueError:
+            continue
+        block_start = m.end()
+        block_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        block = text[block_start:block_end].strip("\n")
+        attachments = _ATTACHMENT_RE.findall(block)
+        body = _ATTACHMENT_RE.sub("", block).strip()
+        yield Entry(
+            timestamp=ts,
+            source=m.group("source") or "",
+            body=body,
+            loc=m.group("where"),
+            attachments=attachments,
+        )

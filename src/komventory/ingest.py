@@ -64,6 +64,7 @@ def _subdir_map(paths: config.Paths) -> dict[str, Path]:
         "video": paths.inbox_video,
         "openclaw": paths.inbox_openclaw,
         "imports": paths.inbox_imports,
+        "pwa": paths.inbox_pwa,
     }
 
 
@@ -149,7 +150,18 @@ def ingest_one(
     elif kind == "audio":
         staged = _stage_attachment(path, paths, subdir, rel)
         log.info("transcribing %s ...", source_label)
-        text = transcribe.transcribe(staged) or "(no speech detected)"
+        text = (transcribe.transcribe(staged) or "").strip()
+        if not text:
+            # No speech detected — don't commit an empty entry. For read-only
+            # subdirs we still mark it processed so we don't re-transcribe on
+            # every sweep; the staged copy is cleaned up either way.
+            log.info("no speech in %s — skipping", source_label)
+            staged.unlink(missing_ok=True)
+            if is_read_only:
+                ledger.mark(ledger_key, path, f"skipped:no-speech@{source_label}")
+            else:
+                path.unlink()
+            return None
         entry = Entry(
             timestamp=ts,
             source=f"whisper@{source_label}",
@@ -171,13 +183,22 @@ def ingest_one(
             frame_paths = []
         log.info("extracting audio + transcribing %s ...", source_label)
         frames.extract_audio_track(staged, audio_tmp)
-        text = transcribe.transcribe(audio_tmp) or "(no speech detected)"
+        text = (transcribe.transcribe(audio_tmp) or "").strip()
         audio_tmp.unlink(missing_ok=True)
+        if not text and not frame_paths:
+            # Nothing salvageable from this video — skip.
+            log.info("no speech and no frames in %s — skipping", source_label)
+            staged.unlink(missing_ok=True)
+            if is_read_only:
+                ledger.mark(ledger_key, path, f"skipped:empty@{source_label}")
+            else:
+                path.unlink()
+            return None
         attachments = [_rel_to_log(staged, paths)] + [_rel_to_log(f, paths) for f in frame_paths]
         entry = Entry(
             timestamp=ts,
             source=f"whisper+frames@{source_label}",
-            body=text,
+            body=text or "(frames only)",
             attachments=attachments,
         )
 

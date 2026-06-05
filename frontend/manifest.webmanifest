@@ -1,0 +1,12 @@
+{
+  "name": "komventory",
+  "short_name": "komventory",
+  "description": "Append-only inventory note capture (Czech)",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1d1f21",
+  "theme_color": "#1d1f21",
+  "lang": "cs",
+  "icons": []
+}

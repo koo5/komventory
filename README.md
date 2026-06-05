@@ -62,6 +62,28 @@ uv sync
 uv run komventory paths
 ```
 
+## PWA (note-capture surface)
+
+`komventory-api` (compose service) serves a single-page web app on **port 3411**:
+
+- Type a note or hit **🎙 záznam** to start continuous VAD-chunked recording (Silero VAD in the browser).
+- Each detected utterance posts to `/api/notes/audio` → Whisper → entry in `log.md`.
+- "mluvit zpět" reads transcripts back in Czech (Piper, `cs_CZ-jirka-medium`, auto-downloaded on first use).
+- "odpovídat na otázky" routes utterances that look like questions through `/api/ask` (LLM is **stubbed** for v1 — wire a real backend in `src/komventory/qa.py:_call_llm`).
+
+Mobile mic requires HTTPS. Reverse-proxy from your existing Caddy (or any HTTPS front), passing the SSE endpoint through unbuffered:
+
+```caddyfile
+inv.example.org {
+    reverse_proxy <docker-host>:3411 {
+        # SSE: flush each event immediately.
+        flush_interval -1
+    }
+}
+```
+
+The PWA and the API share one origin (Caddy fronts both `/` and `/api/*` at the same hostname) — no CORS, no mixed content.
+
 ## Whisper model
 
 Default `large-v3`, multilingual, pinned to Czech (`KOMVENTORY_WHISPER_LANG=cs`). On CPU with `int8` expect ~1–3× realtime; a backlog of phone videos can take hours. Override in `compose.yml` to `medium`/`small`/`base` for faster (lower quality) runs, or set `KOMVENTORY_WHISPER_DEVICE=cuda` if you have a GPU.

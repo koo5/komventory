@@ -27,7 +27,9 @@ class Paths:
     inbox_video: Path
     inbox_openclaw: Path
     inbox_imports: Path
+    inbox_pwa: Path
     cache_whisper: Path
+    cache_piper: Path
 
 
 def _inbox_subdir(inbox: Path, name: str, env_var: str) -> Path:
@@ -55,7 +57,9 @@ def load_paths() -> Paths:
         inbox_video=_inbox_subdir(inbox, "video", "KOMVENTORY_INBOX_VIDEO"),
         inbox_openclaw=_inbox_subdir(inbox, "openclaw", "KOMVENTORY_INBOX_OPENCLAW"),
         inbox_imports=_inbox_subdir(inbox, "imports", "KOMVENTORY_INBOX_IMPORTS"),
+        inbox_pwa=_inbox_subdir(inbox, "pwa", "KOMVENTORY_INBOX_PWA"),
         cache_whisper=data / "cache" / "whisper",
+        cache_piper=data / "cache" / "piper",
     )
 
 

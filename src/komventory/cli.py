@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import click
@@ -65,6 +66,17 @@ def cmd_watch() -> None:
     watch.run_forever()
 
 
+@main.command("serve")
+@click.option("--host", default="0.0.0.0", show_default=True)
+@click.option("--port", type=int,
+              default=lambda: int(os.environ.get("KOMVENTORY_API_PORT", "3411")),
+              show_default="$KOMVENTORY_API_PORT or 3411")
+def cmd_serve(host: str, port: int) -> None:
+    """Run the FastAPI PWA backend (note capture, browse, ask, TTS)."""
+    import uvicorn  # local import: keep startup cheap for non-serve verbs
+    uvicorn.run("komventory.api:app", host=host, port=port, log_level="info")
+
+
 @main.command("render")
 @click.option("-o", "--output", type=click.Path(path_type=Path),
               help="Output path; defaults to log.md's sibling log.html.")
@@ -114,8 +126,8 @@ def cmd_paths() -> None:
     paths = config.load_paths()
     for name in (
         "data", "log_dir", "log_md", "media",
-        "inbox", "inbox_audio", "inbox_video", "inbox_openclaw", "inbox_imports",
-        "cache_whisper",
+        "inbox", "inbox_audio", "inbox_video", "inbox_openclaw", "inbox_imports", "inbox_pwa",
+        "cache_whisper", "cache_piper",
     ):
         click.echo(f"{name:18s} {getattr(paths, name)}")
 

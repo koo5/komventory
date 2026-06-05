@@ -1,0 +1,172 @@
+:root {
+  --bg: #1d1f21;
+  --fg: #e8e8e8;
+  --muted: #888;
+  --accent: #ffd86b;
+  --bubble-bg: #2a2d31;
+  --bubble-q: #3a2f1f;
+  --bubble-a: #1f2a3a;
+  --bubble-stub: #2a1f2f;
+  --border: #333;
+  --rec: #d94545;
+  --rec-active: #ff5f5f;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100dvh;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.status {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.status.busy { color: var(--accent); }
+.status.error { color: var(--rec); }
+
+main {
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.entry {
+  background: var(--bubble-bg);
+  border-radius: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  border-left: 3px solid var(--border);
+}
+.entry.text { border-left-color: #6b9; }
+.entry.whisper { border-left-color: #69b; }
+.entry.image, .entry.video { border-left-color: #b96; }
+.entry.note { border-left-color: #999; }
+.entry.question { background: var(--bubble-q); }
+.entry.answer { background: var(--bubble-a); border-left-color: var(--accent); }
+.entry.answer.stub { background: var(--bubble-stub); }
+
+.entry .meta {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+  display: flex;
+  gap: 0.5rem;
+}
+.entry .body {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.entry .attach {
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+footer {
+  border-top: 1px solid var(--border);
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+}
+
+#text-form {
+  display: flex;
+  gap: 0.4rem;
+}
+#text-input {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bubble-bg);
+  color: var(--fg);
+  font-size: 1rem;
+}
+#text-input:focus { outline: 1px solid var(--accent); }
+#text-form button {
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: var(--bubble-bg);
+  color: var(--fg);
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.controls {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.rec {
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.5rem;
+  background: var(--rec);
+  color: white;
+  border: none;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.rec.active {
+  background: var(--rec-active);
+  box-shadow: 0 0 0 3px rgba(255,95,95,0.35);
+}
+.opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  cursor: pointer;
+}
+.opt input { accent-color: var(--accent); }
+
+#meter {
+  height: 32px;
+  width: 200px;
+  border-radius: 0.3rem;
+  background: var(--bubble-bg);
+  border: 1px solid var(--border);
+  image-rendering: pixelated;
+}
+#meter[hidden] { display: none; }
+
+.dot {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #444;
+  transition: background 80ms;
+}
+.dot.on {
+  background: #6f6;
+  box-shadow: 0 0 6px #6f6;
+}

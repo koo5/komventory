@@ -12,6 +12,11 @@ dependencies = [
     "faster-whisper>=1.0",
     "rich>=13.7",
     "markdown>=3.6",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+    "piper-tts>=1.2",
+    "litellm>=1.50",
 ]
 
 [project.optional-dependencies]
