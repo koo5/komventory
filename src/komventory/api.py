@@ -49,7 +49,7 @@ def _frontend_dir() -> Path:
 
 def _entry_to_dict(e: log_io.Entry) -> dict:
     return {
-        "timestamp": e.timestamp.isoformat(timespec="seconds"),
+        "timestamp": e.timestamp.isoformat(timespec="milliseconds"),
         "source": e.source,
         "body": e.body,
         "where": e.loc,
@@ -64,11 +64,20 @@ class TextNote(BaseModel):
 
 class AskRequest(BaseModel):
     text: str = Field(min_length=1)
+    # Optional: if the question came from a stream entry, the answer entry
+    # we persist will source-tag back at it (`gemini@<anchor_source>`) so the
+    # PWA can pair them in the interleaved view.
+    anchor_source: str | None = None
 
 
 class TTSRequest(BaseModel):
     text: str = Field(min_length=1)
     voice: str | None = None
+
+
+class PromoteRequest(BaseModel):
+    timestamp: str = Field(min_length=1)
+    source: str = Field(min_length=1)
 
 
 app = FastAPI(title="komventory", version="0.1.0")
@@ -92,38 +101,63 @@ def service_worker() -> FileResponse:
 
 
 # ------------------------------------------------------------------- log --
+def _read_entries(path: Path) -> list[log_io.Entry]:
+    if not path.exists():
+        return []
+    return list(log_io.iter_entries(path.read_text(encoding="utf-8")))
+
+
+def _merged_entries(paths: config.Paths) -> list[tuple[log_io.Entry, str]]:
+    """Merge stream.md and log.md, dedupe by (timestamp_iso, source).
+
+    Log wins over stream on conflict — auto-promoted entries appear in both
+    files identically, so dedupe makes them collapse to a single "log"-tagged
+    item in the interleaved view, with the promote button hidden.
+    """
+    seen: dict[tuple[str, str], tuple[log_io.Entry, str]] = {}
+    # Order matters: stream first, log overwrites.
+    for file_path, file_tag in ((paths.stream_md, "stream"), (paths.log_md, "log")):
+        for e in _read_entries(file_path):
+            key = (e.timestamp.isoformat(timespec="milliseconds"), e.source)
+            seen[key] = (e, file_tag)
+    return sorted(seen.values(), key=lambda t: t[0].timestamp)
+
+
 @app.get("/api/log/recent")
 def log_recent(n: int = 50) -> JSONResponse:
     paths = config.load_paths()
-    text = paths.log_md.read_text(encoding="utf-8") if paths.log_md.exists() else ""
-    entries = list(log_io.iter_entries(text))
-    return JSONResponse([_entry_to_dict(e) for e in entries[-n:]])
+    merged = _merged_entries(paths)
+    return JSONResponse([
+        {**_entry_to_dict(e), "file": tag} for (e, tag) in merged[-n:]
+    ])
 
 
 @app.get("/api/log/stream")
 async def log_stream() -> StreamingResponse:
-    """SSE: emit a `log-changed` event whenever log.md's mtime changes.
+    """SSE: emit a `log-changed` event whenever log.md OR stream.md changes.
 
     Client receives the ping and refetches /api/log/recent — simple and robust
-    against chronological inserts that can land anywhere in the file.
+    against chronological inserts that can land anywhere in either file.
     """
     paths = config.load_paths()
+    watched = (paths.log_md, paths.stream_md)
 
     async def gen():
-        last_mtime: float | None = None
-        # Initial hello so the client knows the stream is open.
+        last: list[float | None] = [None, None]
         yield "event: hello\ndata: {}\n\n"
         while True:
             await asyncio.sleep(0.5)
-            try:
-                mtime = paths.log_md.stat().st_mtime
-            except FileNotFoundError:
-                mtime = 0.0
-            if last_mtime is None:
-                last_mtime = mtime
+            now = []
+            for p in watched:
+                try:
+                    now.append(p.stat().st_mtime)
+                except FileNotFoundError:
+                    now.append(0.0)
+            if last[0] is None:
+                last = now
                 continue
-            if mtime != last_mtime:
-                last_mtime = mtime
+            if now != last:
+                last = now
                 yield "event: log-changed\ndata: {}\n\n"
 
     return StreamingResponse(
@@ -131,7 +165,6 @@ async def log_stream() -> StreamingResponse:
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            # Disable proxy buffering for SSE through Caddy/nginx.
             "X-Accel-Buffering": "no",
         },
     )
@@ -148,10 +181,15 @@ def post_note_text(note: TextNote) -> JSONResponse:
         loc=note.where,
     )
     with synced_lock(paths, purpose="api-text"):
-        log_io.insert_entry(paths.log_md, entry)
+        # Routes via stream.md always; classifier auto-promotes non-questions
+        # into log.md. Same rule used by ingest.commit_entry for audio/video.
+        ingest.commit_entry(entry, paths, kind="text")
         _render_safe(paths)
         sync.commit_safe(paths.log_dir, "api: text note")
-    return JSONResponse(_entry_to_dict(entry))
+    # Tag with "log" or "stream" so the PWA shows the right badge / hides
+    # the promote button when the entry was auto-promoted.
+    file_tag = "log" if not qa._looks_like_question(entry.body) else "stream"
+    return JSONResponse({**_entry_to_dict(entry), "file": file_tag})
 
 
 @app.post("/api/notes/audio")
@@ -185,16 +223,64 @@ def post_note_audio(file: UploadFile = File(...)) -> JSONResponse:
     if entry is None:
         # 204 forbids a body; an empty Response is the only legal shape.
         return Response(status_code=204)
-    return JSONResponse(_entry_to_dict(entry))
+    file_tag = "log" if not qa._looks_like_question(entry.body) else "stream"
+    return JSONResponse({**_entry_to_dict(entry), "file": file_tag})
 
 
 # -------------------------------------------------------------------- ask --
 @app.post("/api/ask")
 def post_ask(req: AskRequest) -> JSONResponse:
     paths = config.load_paths()
+    # LLM grounds on log.md ONLY — stream.md noise (questions, half-formed
+    # mumbling, LLM answers themselves) should never colour the answer.
     log_text = paths.log_md.read_text(encoding="utf-8") if paths.log_md.exists() else ""
     result = qa.classify_and_answer(req.text, log_text)
-    return JSONResponse({"is_question": result.is_question, "answer": result.answer})
+    answer_entry = None
+    if result.is_question and result.answer:
+        # Persist the answer to stream.md so it survives page refresh. Tag it
+        # back at the asking entry's source when we have one, otherwise just
+        # `gemini@pwa` for direct /api/ask calls without a stream anchor.
+        anchor = req.anchor_source or "pwa"
+        answer_entry = log_io.Entry(
+            timestamp=datetime.now(tz=config.TIMEZONE),
+            source=f"gemini@{anchor}",
+            body=result.answer,
+        )
+        with synced_lock(paths, purpose="api-ask"):
+            log_io.insert_entry(paths.stream_md, answer_entry)
+            sync.commit_safe(paths.log_dir, f"api: gemini answer ({anchor})")
+    return JSONResponse({
+        "is_question": result.is_question,
+        "answer": result.answer,
+        "answer_entry": _entry_to_dict(answer_entry) if answer_entry else None,
+    })
+
+
+# --------------------------------------------------------------- promote --
+@app.post("/api/promote")
+def post_promote(req: PromoteRequest) -> JSONResponse:
+    """Copy a stream-only entry into log.md (manual misclassification recovery).
+
+    The entry's timestamp + source must match exactly. Idempotent on 409 —
+    already-in-log means the auto-promotion already happened or the user
+    clicked twice.
+    """
+    paths = config.load_paths()
+    target: log_io.Entry | None = None
+    for e in _read_entries(paths.stream_md):
+        if e.timestamp.isoformat(timespec="milliseconds") == req.timestamp and e.source == req.source:
+            target = e
+            break
+    if target is None:
+        raise HTTPException(status_code=404, detail="entry not found in stream.md")
+    for e in _read_entries(paths.log_md):
+        if e.timestamp == target.timestamp and e.source == target.source:
+            raise HTTPException(status_code=409, detail="already in log.md")
+    with synced_lock(paths, purpose="api-promote"):
+        log_io.insert_entry(paths.log_md, target)
+        _render_safe(paths)
+        sync.commit_safe(paths.log_dir, f"promote: {target.source}")
+    return JSONResponse({**_entry_to_dict(target), "file": "log"})
 
 
 # -------------------------------------------------------------------- tts --

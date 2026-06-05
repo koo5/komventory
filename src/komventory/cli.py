@@ -125,7 +125,7 @@ def cmd_paths() -> None:
     """Print resolved paths (for debugging mounts). Read-only — not locked."""
     paths = config.load_paths()
     for name in (
-        "data", "log_dir", "log_md", "media",
+        "data", "log_dir", "log_md", "stream_md", "media",
         "inbox", "inbox_audio", "inbox_video", "inbox_openclaw", "inbox_imports", "inbox_pwa",
         "cache_whisper", "cache_piper",
     ):

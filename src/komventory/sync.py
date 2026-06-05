@@ -79,36 +79,39 @@ def pull(repo_path: Path) -> None:
         raise GitPullFailed(msg)
 
 
-def commit(repo_path: Path, message: str) -> bool:
-    """Stage only `log.md` and commit with `message`.
+VERSIONED_FILES = ("log.md", "stream.md")
 
-    By design we never version anything else in `data/log/` — media is huge and
-    binary, `log.html` is a derived view, and `.idea/`/`.gitkeep` are noise.
-    Returns True if a commit was created, False if there was nothing to commit
-    or log.md doesn't exist yet or the dir isn't a git repo.
+
+def commit(repo_path: Path, message: str) -> bool:
+    """Stage `log.md` + `stream.md` and commit with `message`.
+
+    By design we only version those two — media is huge and binary, `log.html`
+    is a derived view, and `.idea/`/`.gitkeep` are noise. Either or both files
+    being dirty triggers a commit; if both are clean, returns False.
     """
     if not _is_git_repo(repo_path):
         log.debug("not a git repo, skipping commit: %s", repo_path)
         return False
-    log_md = repo_path / "log.md"
-    if not log_md.exists():
-        log.debug("log.md not present yet, nothing to commit")
+    present = [f for f in VERSIONED_FILES if (repo_path / f).exists()]
+    if not present:
+        log.debug("no versioned files present yet, nothing to commit")
         return False
     r = subprocess.run(
-        ["git", "-C", str(repo_path), "add", "--", "log.md"],
+        ["git", "-C", str(repo_path), "add", "--", *present],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
-        raise GitCommitFailed(f"git add log.md: {r.stderr.strip()}")
-    # Anything staged? (--cached restricted to log.md to ignore unrelated index state.)
+        raise GitCommitFailed(f"git add {present}: {r.stderr.strip()}")
+    # Anything staged? Restrict the diff check to the files we stage so
+    # unrelated index state doesn't accidentally trigger a commit.
     r = subprocess.run(
-        ["git", "-C", str(repo_path), "diff", "--cached", "--quiet", "--", "log.md"],
+        ["git", "-C", str(repo_path), "diff", "--cached", "--quiet", "--", *present],
     )
     if r.returncode == 0:
-        log.debug("no changes to log.md to commit")
+        log.debug("no changes to %s to commit", present)
         return False
     r = subprocess.run(
-        ["git", "-C", str(repo_path), "commit", "-m", message, "--", "log.md"],
+        ["git", "-C", str(repo_path), "commit", "-m", message, "--", *present],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
@@ -153,15 +156,16 @@ def synced_lock(paths: config.Paths, purpose: str = "write") -> Iterator[None]:
             except GitPullFailed as e:
                 log.warning("git pull failed: %s; retrying in %.0fs", e, backoff)
             else:
-                # Re-assert the read-only invariant on log.md: git doesn't track
-                # unix mode by default, so a pull may have landed it as 0644.
-                log_md = paths.log_md
-                if log_md.exists():
-                    try:
-                        import os as _os
-                        _os.chmod(log_md, LOG_MD_READONLY_MODE)
-                    except OSError:
-                        pass
+                # Re-assert the read-only invariant on log.md and stream.md:
+                # git doesn't track unix mode by default, so a pull may have
+                # landed them as 0644.
+                import os as _os
+                for p in (paths.log_md, paths.stream_md):
+                    if p.exists():
+                        try:
+                            _os.chmod(p, LOG_MD_READONLY_MODE)
+                        except OSError:
+                            pass
                 yield
                 return
         time.sleep(backoff)

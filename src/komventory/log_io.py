@@ -32,7 +32,10 @@ class Entry:
     attachments: list[str] = field(default_factory=list)
 
     def render(self) -> str:
-        ts = self.timestamp.isoformat(timespec="seconds")
+        # Millisecond precision so two captures within the same second still
+        # produce distinct (timestamp, source) keys — the (timestamp, source)
+        # tuple is the merge key for stream.md ↔ log.md dedupe.
+        ts = self.timestamp.isoformat(timespec="milliseconds")
         header = f"## {ts} — source: {self.source}"
         if self.loc:
             # The Python attribute is `loc` for historical reasons; the

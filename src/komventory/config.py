@@ -21,6 +21,7 @@ class Paths:
     data: Path
     log_dir: Path
     log_md: Path
+    stream_md: Path
     media: Path
     inbox: Path
     inbox_audio: Path
@@ -51,6 +52,7 @@ def load_paths() -> Paths:
         data=data,
         log_dir=log_dir,
         log_md=log_dir / "log.md",
+        stream_md=log_dir / "stream.md",
         media=log_dir / "media",
         inbox=inbox,
         inbox_audio=_inbox_subdir(inbox, "audio", "KOMVENTORY_INBOX_AUDIO"),

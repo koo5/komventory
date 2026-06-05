@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from . import config, model_convert
+from . import cleanup, config, model_convert
 
 
 def _resolve_model_path(name: str, cache_root: Path) -> str:
@@ -44,9 +44,17 @@ def _model():
 
 
 def transcribe(audio_path: Path) -> str:
-    segments, _info = _model().transcribe(
+    segments, info = _model().transcribe(
         str(audio_path),
         language=config.WHISPER_LANG,
         vad_filter=True,
     )
-    return " ".join(seg.text.strip() for seg in segments if seg.text.strip())
+    # Hallucinated segments ("Děkujeme.", subtitle credits) often trail real
+    # speech in the same clip, so filter per segment, not on the joined text.
+    lang = config.WHISPER_LANG or info.language
+    parts = [
+        text
+        for text in (seg.text.strip() for seg in segments)
+        if text and not cleanup.should_ignore_transcription(text, lang=lang)
+    ]
+    return cleanup.remove_repetitions(" ".join(parts))

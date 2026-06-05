@@ -22,6 +22,7 @@ const textInput = $("#text-input");
 const recBtn = $("#rec-toggle");
 const optTts = $("#opt-tts");
 const optAsk = $("#opt-ask");
+const optEcho = $("#opt-echo");
 const meterEl = $("#meter");
 const dotEl = $("#speaking-dot");
 
@@ -31,12 +32,6 @@ let audioCtx = null;        // AudioContext for the analyser
 let analyser = null;        // AnalyserNode tapped off micStream
 let meterRaf = 0;           // requestAnimationFrame handle for the scope
 let recOn = false;
-
-// Ephemeral LLM answers keyed by the triggering entry's "timestamp|source".
-// Re-attached under their anchor entry on every fetchLog so SSE-driven
-// refetches don't unpair them. If the anchor scrolls out of the recent-50
-// window, the answer disappears with it — they're not in log.md anyway.
-const pendingAnswers = new Map();
 
 // ----------------------------------------------------------------- status --
 function setStatus(text, kind) {
@@ -50,6 +45,7 @@ function entryKey(e) {
 }
 
 function classifyEntry(e) {
+  if (e.source?.startsWith("gemini@")) return "gemini";
   if (e.source?.startsWith("text@")) return "text";
   if (e.source?.startsWith("whisper")) return "whisper";
   if (e.source?.startsWith("image@")) return "image";
@@ -57,15 +53,53 @@ function classifyEntry(e) {
   return "other";
 }
 
+function fileBadge(e) {
+  if (e.source?.startsWith("gemini@")) return "🤖";
+  return e.file === "log" ? "📋" : "💬";
+}
+
+function canPromote(e) {
+  // Stream-only entries that aren't LLM answers can be promoted to log.md.
+  return e.file === "stream" && !e.source?.startsWith("gemini@");
+}
+
+async function promoteEntry(e, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = "…";
+  let r;
+  try {
+    r = await fetch("/api/promote", {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({timestamp: e.timestamp, source: e.source}),
+    });
+  } catch (err) {
+    btn.textContent = "✗";
+    btn.disabled = false;
+    return;
+  }
+  if (!r.ok) {
+    btn.textContent = r.status === 409 ? "✓" : "✗";
+    btn.disabled = false;
+    return;
+  }
+  fetchLog();
+}
+
 function renderEntry(e) {
   const div = document.createElement("div");
-  div.className = `entry ${classifyEntry(e)}`;
+  div.className = `entry ${classifyEntry(e)} file-${e.file || "log"}`;
   div.dataset.testid = "entry";
   div.dataset.timestamp = e.timestamp;
   div.dataset.key = entryKey(e);
 
   const meta = document.createElement("div");
   meta.className = "meta";
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = fileBadge(e);
+  meta.appendChild(badge);
   const ts = document.createElement("span");
   ts.textContent = new Date(e.timestamp).toLocaleString("cs-CZ", {
     hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit",
@@ -80,6 +114,15 @@ function renderEntry(e) {
     const w = document.createElement("span");
     w.textContent = `📍 ${e.where}`;
     meta.appendChild(w);
+  }
+  if (canPromote(e)) {
+    const b = document.createElement("button");
+    b.className = "promote";
+    b.dataset.testid = "promote";
+    b.textContent = "→ log";
+    b.title = "Přesunout do curated log.md";
+    b.addEventListener("click", () => promoteEntry(e, b));
+    meta.appendChild(b);
   }
   div.appendChild(meta);
 
@@ -97,47 +140,12 @@ function renderEntry(e) {
   return div;
 }
 
-function renderAnswerBubble(question, answer, isStub) {
-  // Ephemeral — not in log.md. Sits below the entry that triggered it.
-  const div = document.createElement("div");
-  div.className = "entry answer" + (isStub ? " stub" : "");
-  div.dataset.testid = "answer";
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  const tag = document.createElement("span");
-  tag.textContent = isStub ? "🤖 (stub odpověď)" : "🤖 odpověď";
-  meta.appendChild(tag);
-  div.appendChild(meta);
-  const body = document.createElement("div");
-  body.className = "body";
-  body.textContent = answer;
-  div.appendChild(body);
-  return div;
-}
-
-function findEntryNode(key) {
-  for (const node of logEl.querySelectorAll(".entry[data-key]")) {
-    if (node.dataset.key === key) return node;
-  }
-  return null;
-}
-
-function attachAnswerUnder(key, data) {
-  const anchor = findEntryNode(key);
-  if (!anchor) return;
-  const node = renderAnswerBubble(data.question, data.answer, data.isStub);
-  node.dataset.answerFor = key;
-  anchor.after(node);
-}
-
 async function fetchLog() {
   const r = await fetch("/api/log/recent?n=50");
   if (!r.ok) { setStatus("log fetch failed", "error"); return; }
   const entries = await r.json();
   logEl.innerHTML = "";
   for (const e of entries) logEl.appendChild(renderEntry(e));
-  // Replay any pending answers in place, right under their anchor entry.
-  for (const [key, data] of pendingAnswers) attachAnswerUnder(key, data);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
@@ -172,7 +180,9 @@ textForm.addEventListener("submit", async (e) => {
   if (!r.ok) { setStatus("text save failed", "error"); return; }
   const entry = await r.json();
   setStatus(recOn ? "poslouchám…" : "připraveno");
-  if (optAsk.checked) askMaybe(body, entryKey(entry));
+  // Snappy local refresh — SSE will also fire, but we don't want to wait.
+  fetchLog();
+  if (optAsk.checked) askMaybe(body, entry.source);
 });
 
 // ---------------------------------------------------- audio capture (VAD) --
@@ -253,9 +263,10 @@ async function uploadAudio(float32) {
   }
   const entry = await r.json();
   setStatus(recOn ? "poslouchám…" : "připraveno");
+  fetchLog();
   if (entry.body) {
     if (optTts.checked) speakBack(entry.body);
-    if (optAsk.checked) askMaybe(entry.body, entryKey(entry));
+    if (optAsk.checked) askMaybe(entry.body, entry.source);
   }
 }
 
@@ -328,8 +339,18 @@ async function startRecording() {
       preSpeechPadFrames: 8,
       redemptionFrames: 16,
       minSpeechFrames: 3,
-      onSpeechStart: () => { dotEl.classList.add("on"); setStatus("mluvíš…", "busy"); },
-      onSpeechEnd: (audio) => { dotEl.classList.remove("on"); uploadAudio(audio); },
+      onSpeechStart: () => {
+        // Barge-in: if the assistant was speaking, shut it up the moment the
+        // user starts. Stop, don't pause — we want this round's TTS gone.
+        stopTts();
+        dotEl.classList.add("on");
+        setStatus("mluvíš…", "busy");
+      },
+      onSpeechEnd: (audio) => {
+        dotEl.classList.remove("on");
+        if (optEcho.checked) playRecording(audio, 16000);
+        uploadAudio(audio);
+      },
       onVADMisfire: () => { dotEl.classList.remove("on"); setStatus(recOn ? "poslouchám…" : "připraveno"); },
     });
     micVad.start();
@@ -380,13 +401,13 @@ recBtn.addEventListener("click", async () => {
 });
 
 // ------------------------------------------------------------------- ask --
-async function askMaybe(text, anchorKey) {
+async function askMaybe(text, anchorSource) {
   let r;
   try {
     r = await fetch("/api/ask", {
       method: "POST",
       headers: {"content-type": "application/json"},
-      body: JSON.stringify({text}),
+      body: JSON.stringify({text, anchor_source: anchorSource}),
     });
   } catch (e) {
     return;
@@ -394,16 +415,30 @@ async function askMaybe(text, anchorKey) {
   if (!r.ok) return;
   const result = await r.json();
   if (!result.is_question || !result.answer) return;
-  const isStub = result.answer.startsWith("(stub:");
-  const data = {question: text, answer: result.answer, isStub};
-  pendingAnswers.set(anchorKey, data);
-  attachAnswerUnder(anchorKey, data);
-  logEl.scrollTop = logEl.scrollHeight;
+  // Answer is persisted in stream.md by the server; refresh to pick it up
+  // immediately instead of waiting for the next SSE tick.
+  fetchLog();
   if (optTts.checked) speakBack(result.answer);
 }
 
 // ------------------------------------------------------------------- tts --
 let ttsAudio = null;
+
+function stopTts() {
+  // Full stop — paused playback would silently resume if the same audio
+  // element got reused. We want barge-in: assistant shuts up entirely.
+  if (!ttsAudio) return;
+  try { ttsAudio.pause(); } catch {}
+  try {
+    const oldSrc = ttsAudio.src;
+    ttsAudio.removeAttribute("src");
+    ttsAudio.load();
+    // Releasing the blob URL prevents the leak we'd otherwise get every utterance.
+    if (oldSrc.startsWith("blob:")) URL.revokeObjectURL(oldSrc);
+  } catch {}
+  ttsAudio = null;
+}
+
 async function speakBack(text) {
   if (!text) return;
   console.log("[tts] sending", JSON.stringify(text));
@@ -419,10 +454,26 @@ async function speakBack(text) {
   }
   if (!r.ok) return;
   const blob = await r.blob();
-  // Stop any prior playback so new transcripts don't overlap with old ones.
-  if (ttsAudio) { ttsAudio.pause(); ttsAudio.src = ""; }
+  stopTts();  // discard anything still in flight before starting fresh
   ttsAudio = new Audio(URL.createObjectURL(blob));
   ttsAudio.play().catch(() => { /* autoplay can fail; user must interact first */ });
+}
+
+// Replay the just-captured utterance through the speakers so you can verify
+// the mic actually heard what you said. Web Audio playback (not <audio>) so
+// we can feed the same Float32 buffer the VAD handed us without re-encoding.
+function playRecording(float32, sampleRate = 16000) {
+  if (!audioCtx) return;
+  try {
+    const buf = audioCtx.createBuffer(1, float32.length, sampleRate);
+    buf.copyToChannel(float32, 0);
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start();
+  } catch (e) {
+    console.warn("[echo] playback failed", e);
+  }
 }
 
 // ------------------------------------------------------------------ init --

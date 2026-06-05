@@ -18,7 +18,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import config, frames, timestamps, transcribe
+from . import config, frames, qa, timestamps, transcribe
 from .log_io import Entry, insert_entry
 from .state import ProcessedLedger
 
@@ -99,6 +99,28 @@ def _rel_to_log(path: Path, paths: config.Paths) -> str:
 
 def _make_ledger(paths: config.Paths) -> ProcessedLedger:
     return ProcessedLedger(paths.inbox / ".processed.json")
+
+
+def commit_entry(entry: Entry, paths: config.Paths, kind: str) -> None:
+    """Write the entry to stream.md (always) and to log.md (conditionally).
+
+    stream.md is the event-sourced river — every PWA capture, every ingested
+    file. log.md is the curated inventory — auto-populated by promotion at
+    write time, but hand-editable in the fork.
+
+    Promotion rules:
+      - image / note: always promote (factual; hand-curated note files were
+        authored elsewhere with intent already).
+      - audio / video / text: classify by `qa._looks_like_question`. Notes
+        promote; questions stay stream-only. Misclassifications recover via
+        the manual /api/promote endpoint.
+    """
+    insert_entry(paths.stream_md, entry)
+    if kind in ("image", "note"):
+        insert_entry(paths.log_md, entry)
+        return
+    if not qa._looks_like_question(entry.body):
+        insert_entry(paths.log_md, entry)
 
 
 def ingest_one(
@@ -205,7 +227,7 @@ def ingest_one(
     else:
         raise UnsupportedFile(kind)
 
-    insert_entry(paths.log_md, entry)
+    commit_entry(entry, paths, kind)
 
     if is_read_only:
         ledger.mark(ledger_key, path, entry.source)

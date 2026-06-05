@@ -65,9 +65,10 @@ main {
 .entry.whisper { border-left-color: #69b; }
 .entry.image, .entry.video { border-left-color: #b96; }
 .entry.note { border-left-color: #999; }
-.entry.question { background: var(--bubble-q); }
-.entry.answer { background: var(--bubble-a); border-left-color: var(--accent); }
-.entry.answer.stub { background: var(--bubble-stub); }
+.entry.gemini { background: var(--bubble-a); border-left-color: var(--accent); }
+/* Stream-only entries dimmed slightly — they're in the river but not curated. */
+.entry.file-stream:not(.gemini) { opacity: 0.82; }
+.entry.file-log { opacity: 1; }
 
 .entry .meta {
   font-size: 0.75rem;
@@ -75,7 +76,24 @@ main {
   margin-bottom: 0.2rem;
   display: flex;
   gap: 0.5rem;
+  align-items: center;
 }
+.entry .meta .badge {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.entry .meta .promote {
+  margin-left: auto;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.entry .meta .promote:hover { color: var(--accent); border-color: var(--accent); }
+.entry .meta .promote:disabled { opacity: 0.5; cursor: default; }
 .entry .body {
   white-space: pre-wrap;
   word-wrap: break-word;
