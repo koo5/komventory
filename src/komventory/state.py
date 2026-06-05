@@ -31,11 +31,21 @@ class ProcessedLedger:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.data: dict[str, _Record] = {}
-        if path.exists():
-            try:
-                self.data = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                self.data = {}
+        self.reload()
+
+    def reload(self) -> None:
+        """Re-read from disk; another process may have marked entries since load.
+
+        Call under the komventory lock before is_processed/mark so a long-lived
+        ledger (the watcher's) doesn't act on — or save over — stale state.
+        Keeps in-memory data if the file is missing or corrupt/mid-write.
+        """
+        if not self.path.exists():
+            return
+        try:
+            self.data = json.loads(self.path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
 
     def is_processed(self, key: str, file: Path) -> bool:
         rec = self.data.get(key)

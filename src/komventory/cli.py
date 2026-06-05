@@ -45,19 +45,14 @@ def main(ctx: click.Context, verbose: bool) -> None:
 def cmd_ingest(path: Path | None, force: bool) -> None:
     """Process one file, or sweep inbox/ if no path given."""
     paths = config.load_paths()
-    with synced_lock(paths, purpose="ingest"):
-        if path is None:
-            n = ingest.sweep_inbox(paths, force=force)
-            if n:
-                _render_safe(paths)
-                sync.commit_safe(paths.log_dir, f"ingest: sweep ({n} entries)")
-            click.echo(f"appended {n} entries from inbox")
-        else:
-            result = ingest.ingest_one(path, paths, force=force)
-            if result:
-                _render_safe(paths)
-                sync.commit_safe(paths.log_dir, f"ingest: {result.source}")
-            click.echo("appended 1 entry" if result else "skipped")
+    # ingest_one locks per file around just the mutation tail (insert/render/
+    # commit); transcription runs unlocked. Each entry gets its own git commit.
+    if path is None:
+        n = ingest.sweep_inbox(paths, force=force)
+        click.echo(f"appended {n} entries from inbox")
+    else:
+        result = ingest.ingest_one(path, paths, force=force)
+        click.echo("appended 1 entry" if result else "skipped")
 
 
 @main.command("watch")

@@ -86,12 +86,20 @@ switch "$sub"
         curl -sS -X POST "$base/api/notes/audio" -F "file=@$argv[1]" | _pretty
 
     case promote
-        if test -z "$argv[1]" -o -z "$argv[2]"
-            echo "usage: komv-test promote <timestamp> <source>" >&2
+        # Two forms:
+        #   promote <ulid>                      — preferred, post-rollout entries
+        #   promote <timestamp> <source>        — legacy, for entries without an id
+        if test -z "$argv[1]"
+            echo "usage: komv-test promote <ulid>             (preferred)" >&2
+            echo "       komv-test promote <timestamp> <src>  (legacy)" >&2
             exit 2
         end
-        jq -n --arg t "$argv[1]" --arg s "$argv[2]" '{timestamp: $t, source: $s}' | \
-            _post_stdin /api/promote
+        if test -z "$argv[2]"
+            jq -n --arg id "$argv[1]" '{id: $id}' | _post_stdin /api/promote
+        else
+            jq -n --arg t "$argv[1]" --arg s "$argv[2]" '{timestamp: $t, source: $s}' | \
+                _post_stdin /api/promote
+        end
 
     case ping
         curl -sS -o /dev/null -w "status=%{http_code} time=%{time_total}s\n" "$base/api/log/recent?n=1"

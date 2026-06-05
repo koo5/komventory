@@ -49,6 +49,7 @@ def _frontend_dir() -> Path:
 
 def _entry_to_dict(e: log_io.Entry) -> dict:
     return {
+        "id": e.id,
         "timestamp": e.timestamp.isoformat(timespec="milliseconds"),
         "source": e.source,
         "body": e.body,
@@ -76,8 +77,11 @@ class TTSRequest(BaseModel):
 
 
 class PromoteRequest(BaseModel):
-    timestamp: str = Field(min_length=1)
-    source: str = Field(min_length=1)
+    # Preferred path: id alone uniquely identifies the entry.
+    id: str | None = None
+    # Legacy fallback for entries written before the ULID rollout.
+    timestamp: str | None = None
+    source: str | None = None
 
 
 app = FastAPI(title="komventory", version="0.1.0")
@@ -107,19 +111,24 @@ def _read_entries(path: Path) -> list[log_io.Entry]:
     return list(log_io.iter_entries(path.read_text(encoding="utf-8")))
 
 
+def _dedupe_key(e: log_io.Entry):
+    """Key for stream/log merge. Prefer ULID id; legacy entries fall back to
+    (timestamp_iso_ms, source) — pre-ULID rollout entries have no id."""
+    return e.id if e.id else (e.timestamp.isoformat(timespec="milliseconds"), e.source)
+
+
 def _merged_entries(paths: config.Paths) -> list[tuple[log_io.Entry, str]]:
-    """Merge stream.md and log.md, dedupe by (timestamp_iso, source).
+    """Merge stream.md and log.md, dedupe via _dedupe_key.
 
     Log wins over stream on conflict — auto-promoted entries appear in both
-    files identically, so dedupe makes them collapse to a single "log"-tagged
-    item in the interleaved view, with the promote button hidden.
+    files identically (same id), so dedupe makes them collapse to a single
+    "log"-tagged item in the interleaved view, with the promote button hidden.
     """
-    seen: dict[tuple[str, str], tuple[log_io.Entry, str]] = {}
+    seen: dict = {}
     # Order matters: stream first, log overwrites.
     for file_path, file_tag in ((paths.stream_md, "stream"), (paths.log_md, "log")):
         for e in _read_entries(file_path):
-            key = (e.timestamp.isoformat(timespec="milliseconds"), e.source)
-            seen[key] = (e, file_tag)
+            seen[_dedupe_key(e)] = (e, file_tag)
     return sorted(seen.values(), key=lambda t: t[0].timestamp)
 
 
@@ -178,6 +187,7 @@ def post_note_text(note: TextNote) -> JSONResponse:
         timestamp=datetime.now(tz=config.TIMEZONE),
         source="text@pwa",
         body=note.body.strip(),
+        id=log_io.new_id(),
         loc=note.where,
     )
     with synced_lock(paths, purpose="api-text"):
@@ -210,16 +220,14 @@ def post_note_audio(file: UploadFile = File(...)) -> JSONResponse:
     with dest.open("wb") as f:
         while chunk := file.file.read(1 << 20):
             f.write(chunk)
-    with synced_lock(paths, purpose="api-audio"):
-        try:
-            entry = ingest.ingest_one(dest, paths)
-        except Exception:
-            log.exception("ingest_one failed for %s", dest)
-            dest.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail="ingest failed")
-        if entry is not None:
-            _render_safe(paths)
-            sync.commit_safe(paths.log_dir, f"api: audio note ({entry.source})")
+    # ingest_one transcribes WITHOUT the lock and locks only the mutation tail
+    # (insert/render/commit), so concurrent text notes aren't blocked on Whisper.
+    try:
+        entry = ingest.ingest_one(dest, paths, commit_label="api: audio note")
+    except Exception:
+        log.exception("ingest_one failed for %s", dest)
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail="ingest failed")
     if entry is None:
         # 204 forbids a body; an empty Response is the only legal shape.
         return Response(status_code=204)
@@ -245,6 +253,7 @@ def post_ask(req: AskRequest) -> JSONResponse:
             timestamp=datetime.now(tz=config.TIMEZONE),
             source=f"gemini@{anchor}",
             body=result.answer,
+            id=log_io.new_id(),
         )
         with synced_lock(paths, purpose="api-ask"):
             log_io.insert_entry(paths.stream_md, answer_entry)
@@ -266,15 +275,26 @@ def post_promote(req: PromoteRequest) -> JSONResponse:
     clicked twice.
     """
     paths = config.load_paths()
+
+    def _matches(e: log_io.Entry) -> bool:
+        if req.id:
+            return e.id == req.id
+        if req.timestamp and req.source:
+            return e.timestamp.isoformat(timespec="milliseconds") == req.timestamp and e.source == req.source
+        return False
+
+    if not req.id and not (req.timestamp and req.source):
+        raise HTTPException(status_code=422, detail="provide id, or both timestamp and source")
+
     target: log_io.Entry | None = None
     for e in _read_entries(paths.stream_md):
-        if e.timestamp.isoformat(timespec="milliseconds") == req.timestamp and e.source == req.source:
+        if _matches(e):
             target = e
             break
     if target is None:
         raise HTTPException(status_code=404, detail="entry not found in stream.md")
     for e in _read_entries(paths.log_md):
-        if e.timestamp == target.timestamp and e.source == target.source:
+        if _matches(e):
             raise HTTPException(status_code=409, detail="already in log.md")
     with synced_lock(paths, purpose="api-promote"):
         log_io.insert_entry(paths.log_md, target)

@@ -41,7 +41,9 @@ function setStatus(text, kind) {
 
 // -------------------------------------------------------------------- log --
 function entryKey(e) {
-  return `${e.timestamp}|${e.source}`;
+  // ULID when present (post-rollout entries) — uniquely identifies the event.
+  // Legacy entries (no id) fall back to the old timestamp|source key.
+  return e.id || `${e.timestamp}|${e.source}`;
 }
 
 function classifyEntry(e) {
@@ -67,12 +69,15 @@ async function promoteEntry(e, btn) {
   btn.disabled = true;
   const orig = btn.textContent;
   btn.textContent = "…";
+  // Prefer id (unambiguous, post-rollout); fall back to timestamp+source for
+  // legacy entries that don't have one yet.
+  const payload = e.id ? {id: e.id} : {timestamp: e.timestamp, source: e.source};
   let r;
   try {
     r = await fetch("/api/promote", {
       method: "POST",
       headers: {"content-type": "application/json"},
-      body: JSON.stringify({timestamp: e.timestamp, source: e.source}),
+      body: JSON.stringify(payload),
     });
   } catch (err) {
     btn.textContent = "✗";

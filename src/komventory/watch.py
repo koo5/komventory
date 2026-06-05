@@ -13,8 +13,7 @@ from pathlib import Path
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from . import config, ingest, render_html, sync
-from .sync import synced_lock
+from . import config, ingest
 
 log = logging.getLogger(__name__)
 
@@ -35,14 +34,10 @@ class _IngestHandler(FileSystemEventHandler):
         if not p.exists():
             return
         try:
-            with synced_lock(self.paths, purpose=f"watch:{p.name}"):
-                entry = ingest.ingest_one(p, self.paths, ledger=self.ledger)
-                if entry:
-                    try:
-                        render_html.render(self.paths.log_md)
-                    except Exception:
-                        log.exception("auto-render failed; log.md is fine, log.html may be stale")
-                    sync.commit_safe(self.paths.log_dir, f"ingest: {entry.source}")
+            # ingest_one transcribes WITHOUT the lock and takes it only for the
+            # short mutation tail (insert/render/commit) — PWA writes are not
+            # blocked for the duration of a Whisper run.
+            ingest.ingest_one(p, self.paths, ledger=self.ledger)
         except ingest.UnsupportedFile as e:
             log.warning("skip: %s", e)
         except Exception:
@@ -60,15 +55,11 @@ class _IngestHandler(FileSystemEventHandler):
 def run_forever() -> None:
     paths = config.load_paths()
     ledger = ingest._make_ledger(paths)
-    # Sweep first so anything that arrived while the watcher was down gets processed.
-    with synced_lock(paths, purpose="watch:initial-sweep"):
-        n = ingest.sweep_inbox(paths)
-        if n:
-            try:
-                render_html.render(paths.log_md)
-            except Exception:
-                log.exception("auto-render failed; log.md is fine, log.html may be stale")
-            sync.commit_safe(paths.log_dir, f"ingest: initial sweep ({n} entries)")
+    # Sweep first so anything that arrived while the watcher was down gets
+    # processed. Locking is per-file inside ingest_one, so a long backlog
+    # doesn't hold the lock hostage and a restart loses at most one file's
+    # commit window.
+    n = ingest.sweep_inbox(paths)
     if n:
         log.info("initial sweep: %d entries", n)
 

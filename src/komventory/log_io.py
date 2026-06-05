@@ -28,15 +28,20 @@ class Entry:
     timestamp: datetime
     source: str
     body: str
+    # ULID (sortable, ms-prefixed) generated at write time. Optional because
+    # legacy entries don't have one — the parser leaves it None for those, and
+    # downstream code (dedupe, promote lookup) falls back to (timestamp, source)
+    # when id is missing. New entries should always be created with new_id().
+    id: str | None = None
     loc: str | None = None
     attachments: list[str] = field(default_factory=list)
 
     def render(self) -> str:
-        # Millisecond precision so two captures within the same second still
-        # produce distinct (timestamp, source) keys — the (timestamp, source)
-        # tuple is the merge key for stream.md ↔ log.md dedupe.
         ts = self.timestamp.isoformat(timespec="milliseconds")
-        header = f"## {ts} — source: {self.source}"
+        header = f"## {ts}"
+        if self.id:
+            header += f" — id: {self.id}"
+        header += f" — source: {self.source}"
         if self.loc:
             # The Python attribute is `loc` for historical reasons; the
             # rendered field name is `where:` — a single mixed-meaning slot
@@ -50,6 +55,12 @@ class Entry:
                 lines.append(f"![[{path}]]")
         lines.append("")
         return "\n".join(lines) + "\n"
+
+
+def new_id() -> str:
+    """Mint a fresh ULID for a new event. Sortable, ms-prefixed, ~no collision."""
+    from ulid import ULID  # noqa: PLC0415 — defer import; ulid is light but unused on read paths
+    return str(ULID())
 
 
 def _find_insert_offset(text: str, ts: datetime) -> int:
@@ -124,6 +135,7 @@ append_entry = insert_entry
 
 _HEADER_PARSE_RE = re.compile(
     r"^## (?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)"
+    r"(?:\s+—\s+id:\s+(?P<id>\S+))?"
     r"(?:\s+—\s+source:\s+(?P<source>\S+))?"
     r'(?:\s+—\s+where:\s+"(?P<where>[^"]*)")?'
     r"\s*$",
@@ -156,6 +168,7 @@ def iter_entries(text: str):
             timestamp=ts,
             source=m.group("source") or "",
             body=body,
+            id=m.group("id"),
             loc=m.group("where"),
             attachments=attachments,
         )

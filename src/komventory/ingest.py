@@ -16,11 +16,13 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, frames, qa, timestamps, transcribe
-from .log_io import Entry, insert_entry
+from . import config, frames, qa, render_html, sync, timestamps, transcribe
+from .log_io import Entry, insert_entry, new_id
 from .state import ProcessedLedger
+from .sync import synced_lock
 
 log = logging.getLogger(__name__)
 
@@ -123,16 +125,48 @@ def commit_entry(entry: Entry, paths: config.Paths, kind: str) -> None:
         insert_entry(paths.log_md, entry)
 
 
-def ingest_one(
+@dataclass
+class Prepared:
+    """Output of the unlocked heavy phase, consumed by the locked commit phase.
+
+    `entry=None` means the file yielded nothing committable (no speech / empty
+    video) but still needs its bookkeeping: ledger-mark with `skip_tag` for
+    read-only sources, source unlink for owned ones.
+    """
+    entry: Entry | None
+    kind: str
+    source_path: Path
+    ledger_key: str
+    is_read_only: bool
+    force: bool = False
+    skip_tag: str | None = None
+    # Media artifacts staged during prepare. Removed only when the commit
+    # phase *discards* the work (another ingester beat us to the file); on
+    # failure they stay put so a retry re-stages over them.
+    staged: list[Path] = field(default_factory=list)
+
+
+def _discard_staged(prepared: Prepared) -> None:
+    for p in prepared.staged:
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            p.unlink(missing_ok=True)
+
+
+def prepare_one(
     file_path: Path,
-    paths: config.Paths | None = None,
+    paths: config.Paths,
     *,
     force: bool = False,
-    ledger: ProcessedLedger | None = None,
-) -> Entry | None:
-    paths = paths or config.load_paths()
-    ledger = ledger if ledger is not None else _make_ledger(paths)
+    ledger: ProcessedLedger,
+) -> Prepared | None:
+    """Heavy phase: classify, stage, extract frames, transcribe. NO LOCK NEEDED.
 
+    Only touches private artifacts (staged copies under media/, which git never
+    versions). The ledger check here is optimistic — `commit_prepared` re-checks
+    under the lock before mutating anything shared.
+    """
     path = file_path
     if not path.is_file():
         log.warning("skipping non-file: %s", path)
@@ -156,20 +190,29 @@ def ingest_one(
     ts = timestamps.resolve(path)
     source_label = f"{subdir}/{rel}"
 
+    def _prepared(entry: Entry | None, *, skip_tag: str | None = None, staged: list[Path] | None = None) -> Prepared:
+        return Prepared(
+            entry=entry, kind=kind, source_path=path, ledger_key=ledger_key,
+            is_read_only=is_read_only, force=force, skip_tag=skip_tag,
+            staged=staged or [],
+        )
+
     if kind == "note":
         body = path.read_text(encoding="utf-8").strip()
-        entry = Entry(timestamp=ts, source=f"note@{source_label}", body=body)
+        return _prepared(Entry(timestamp=ts, source=f"note@{source_label}", body=body, id=new_id()))
 
-    elif kind == "image":
+    if kind == "image":
         staged = _stage_attachment(path, paths, subdir, rel)
         entry = Entry(
             timestamp=ts,
             source=f"image@{source_label}",
             body=f"(image: {path.name})",
+            id=new_id(),
             attachments=[_rel_to_log(staged, paths)],
         )
+        return _prepared(entry, staged=[staged])
 
-    elif kind == "audio":
+    if kind == "audio":
         staged = _stage_attachment(path, paths, subdir, rel)
         log.info("transcribing %s ...", source_label)
         text = (transcribe.transcribe(staged) or "").strip()
@@ -179,19 +222,17 @@ def ingest_one(
             # every sweep; the staged copy is cleaned up either way.
             log.info("no speech in %s — skipping", source_label)
             staged.unlink(missing_ok=True)
-            if is_read_only:
-                ledger.mark(ledger_key, path, f"skipped:no-speech@{source_label}")
-            else:
-                path.unlink()
-            return None
+            return _prepared(None, skip_tag=f"skipped:no-speech@{source_label}")
         entry = Entry(
             timestamp=ts,
             source=f"whisper@{source_label}",
             body=text,
+            id=new_id(),
             attachments=[_rel_to_log(staged, paths)],
         )
+        return _prepared(entry, staged=[staged])
 
-    elif kind == "video":
+    if kind == "video":
         staged = _stage_attachment(path, paths, subdir, rel)
         frame_dir = paths.media / subdir / f"{rel}.frames"
         audio_tmp = paths.media / subdir / f"{rel}.audio.wav"
@@ -211,30 +252,93 @@ def ingest_one(
             # Nothing salvageable from this video — skip.
             log.info("no speech and no frames in %s — skipping", source_label)
             staged.unlink(missing_ok=True)
-            if is_read_only:
-                ledger.mark(ledger_key, path, f"skipped:empty@{source_label}")
-            else:
-                path.unlink()
-            return None
+            return _prepared(None, skip_tag=f"skipped:empty@{source_label}")
         attachments = [_rel_to_log(staged, paths)] + [_rel_to_log(f, paths) for f in frame_paths]
         entry = Entry(
             timestamp=ts,
             source=f"whisper+frames@{source_label}",
             body=text or "(frames only)",
+            id=new_id(),
             attachments=attachments,
         )
+        return _prepared(entry, staged=[staged, frame_dir])
 
+    raise UnsupportedFile(kind)
+
+
+def commit_prepared(prepared: Prepared, paths: config.Paths, ledger: ProcessedLedger) -> Entry | None:
+    """Mutation phase: insert entry, mark ledger / unlink source. CALLER HOLDS THE LOCK.
+
+    Re-checks against fresh shared state: another ingester (ad-hoc host run vs
+    the watcher) may have processed the same file while we were transcribing.
+    In that case the staged artifacts are discarded and nothing is written.
+    """
+    ledger.reload()
+    src = prepared.source_path
+
+    if prepared.is_read_only:
+        if not prepared.force and ledger.is_processed(prepared.ledger_key, src):
+            log.info("lost ingest race for %s — discarding prepared entry", prepared.ledger_key)
+            _discard_staged(prepared)
+            return None
+    elif not src.exists():
+        # Owned source vanished mid-prepare: another ingester consumed it (or
+        # the user deleted it). Either way the entry must not land twice.
+        log.info("source gone before commit: %s — discarding prepared entry", prepared.ledger_key)
+        _discard_staged(prepared)
+        return None
+
+    if prepared.entry is None:
+        # Bookkeeping-only skip (no speech / empty video).
+        if prepared.is_read_only:
+            ledger.mark(prepared.ledger_key, src, prepared.skip_tag or "skipped")
+        else:
+            src.unlink(missing_ok=True)
+        return None
+
+    commit_entry(prepared.entry, paths, prepared.kind)
+    if prepared.is_read_only:
+        ledger.mark(prepared.ledger_key, src, prepared.entry.source)
     else:
-        raise UnsupportedFile(kind)
+        src.unlink(missing_ok=True)
+    log.info("appended entry from %s", prepared.ledger_key)
+    return prepared.entry
 
-    commit_entry(entry, paths, kind)
 
-    if is_read_only:
-        ledger.mark(ledger_key, path, entry.source)
-    else:
-        path.unlink()
+def _render_safe(paths: config.Paths) -> None:
+    try:
+        render_html.render(paths.log_md)
+    except Exception:
+        log.exception("auto-render failed; log.md is fine, log.html may be stale")
 
-    log.info("appended entry from %s", source_label)
+
+def ingest_one(
+    file_path: Path,
+    paths: config.Paths | None = None,
+    *,
+    force: bool = False,
+    ledger: ProcessedLedger | None = None,
+    commit_label: str = "ingest",
+) -> Entry | None:
+    """Ingest one file: heavy work unlocked, then a short lock for the mutation tail.
+
+    Staging and transcription run without the komventory lock — they only touch
+    private media/ artifacts — so PWA writes and other ingesters aren't blocked
+    for the duration of a Whisper run. The lock is held just for: pull, insert,
+    ledger/unlink, render, git commit.
+    """
+    paths = paths or config.load_paths()
+    ledger = ledger if ledger is not None else _make_ledger(paths)
+
+    prepared = prepare_one(file_path, paths, force=force, ledger=ledger)
+    if prepared is None:
+        return None
+
+    with synced_lock(paths, purpose=f"ingest:{file_path.name}"):
+        entry = commit_prepared(prepared, paths, ledger)
+        if entry is not None:
+            _render_safe(paths)
+            sync.commit_safe(paths.log_dir, f"{commit_label}: {entry.source}")
     return entry
 
 

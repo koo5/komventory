@@ -20,8 +20,10 @@ import markdown as md
 from . import config
 
 _ENTRY_RE = re.compile(
-    r"^## (?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?) "
-    r"— source: (?P<source>\S+)"
+    r"^## (?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?)"
+    # `id:` field is optional — legacy entries (pre-ULID rollout) have none.
+    r"(?: — id: (?P<id>\S+))?"
+    r" — source: (?P<source>\S+)"
     # Accept legacy `loc:` and current `where:` — they mean the same thing.
     r'(?: — (?:loc|where): "(?P<where>[^"]+)")?\s*$',
     re.MULTILINE,
