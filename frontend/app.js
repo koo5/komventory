@@ -424,6 +424,15 @@ async function askMaybe(text, anchorSource) {
   }
   if (!r.ok) return;
   const result = await r.json();
+  if (result.error) {
+    // Transient LLM failure (503, rate limit, timeout). Show in the status
+    // bar and, if TTS is on, speak the technical message so a hands-free
+    // user hears what went wrong (`_short_error` on the server kept it to
+    // a one-line `<code> <provider>: <msg>` shape that's safe to TTS).
+    setStatus(`LLM: ${result.error}`, "error");
+    if (optTts.checked) speakBack(result.error);
+    return;
+  }
   if (!result.is_question || !result.answer) return;
   // Answer is persisted in stream.md by the server; refresh to pick it up
   // immediately instead of waiting for the next SSE tick.

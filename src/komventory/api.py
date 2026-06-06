@@ -244,10 +244,12 @@ def post_ask(req: AskRequest) -> JSONResponse:
     log_text = paths.log_md.read_text(encoding="utf-8") if paths.log_md.exists() else ""
     result = qa.classify_and_answer(req.text, log_text)
     answer_entry = None
-    if result.is_question and result.answer:
+    if result.is_question and result.answer and not result.error:
         # Persist the answer to stream.md so it survives page refresh. Tag it
         # back at the asking entry's source when we have one, otherwise just
         # `gemini@pwa` for direct /api/ask calls without a stream anchor.
+        # Errors are NOT persisted — they're transient and would otherwise
+        # pollute stream.md with junk like "ServiceUnavailableError: 503".
         anchor = req.anchor_source or "pwa"
         answer_entry = log_io.Entry(
             timestamp=datetime.now(tz=config.TIMEZONE),
@@ -261,6 +263,7 @@ def post_ask(req: AskRequest) -> JSONResponse:
     return JSONResponse({
         "is_question": result.is_question,
         "answer": result.answer,
+        "error": result.error,
         "answer_entry": _entry_to_dict(answer_entry) if answer_entry else None,
     })
 

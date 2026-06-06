@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import log_io
+
 log = logging.getLogger(__name__)
 
 # Czech question starters. Not exhaustive; we also fall back to '?' detection.
@@ -50,7 +52,8 @@ _PROVIDER_KEY_VARS = {
 @dataclass
 class QAResult:
     is_question: bool
-    answer: str | None  # None when not a question or when LLM declined
+    answer: str | None = None  # set on success; None when not a question or on error
+    error: str | None = None   # short transient/permanent failure message; client may retry
 
 
 def _looks_like_question(text: str) -> bool:
@@ -89,29 +92,71 @@ def _hydrate_secret_into_env(model: str) -> None:
 _SYSTEM_PROMPT = (
     "Jsi asistent ve skladovacím systému uživatele. Pod jménem 'log' najdeš "
     "chronologický seznam poznámek o tom, kde má co uloženo, většinou česky. "
+    "Každý řádek logu má tvar `[datum čas] tělo poznámky`. "
     "Odpovídej stručně česky. Když odpověď v logu není, řekni to přímo — "
-    "neimprovizuj. Cituj klíčové fragmenty doslova, ať uživatel ví, na jakou "
-    "poznámku odkazuješ."
+    "neimprovizuj. Pokud potřebuješ poznámku odcitovat, použij krátkou citaci "
+    "z těla a stručné datum (např. „před týdnem“), ne celá ISO timestamps."
 )
 
 
-def _call_llm(text: str, log_md_text: str) -> str:
-    """Call the configured LLM via LiteLLM and return plain text in Czech.
+def _simplify_log_for_grounding(text: str) -> str:
+    """Strip log.md metadata before handing it to the LLM.
 
-    Errors bubble up as strings to the caller (the API endpoint), which logs
-    + sends them as the answer so the user sees what went wrong instead of
-    a silent empty bubble.
+    The raw markdown carries `id: <ulid>`, `source: <kind>` and full ISO
+    timestamps on every header — none of which is useful for answering, and
+    the model tends to quote it back at the user. Reduce each entry to
+    `[YYYY-MM-DD HH:MM] [where] body` so citations stay readable.
+    """
+    lines: list[str] = []
+    for e in log_io.iter_entries(text):
+        when = e.timestamp.strftime("%Y-%m-%d %H:%M")
+        prefix = f"[{when}]"
+        if e.loc:
+            prefix += f" [{e.loc}]"
+        lines.append(f"{prefix} {e.body}".strip())
+    return "\n\n".join(lines)
+
+
+def _short_error(e: Exception) -> str:
+    """Compact, speakable error: `<code> <provider>: <message>`.
+
+    LiteLLM normalises exceptions to carry `status_code` and `llm_provider`
+    attributes; fall back to the class name when missing. The inner JSON
+    `"message": "..."` field (Gemini/OpenAI/Anthropic-shaped errors) is
+    preferred over the wrapping noise from str(e). First sentence only —
+    avoids reading paragraphs of provider boilerplate aloud.
+    """
+    code = getattr(e, "status_code", None)
+    provider = getattr(e, "llm_provider", None)
+    raw = str(e) or type(e).__name__
+    inner = re.search(r'"message"\s*:\s*"([^"]+)"', raw)
+    msg = inner.group(1) if inner else raw.splitlines()[0]
+    msg = msg.split(". ", 1)[0].strip().rstrip(".")
+    head_parts: list[str] = []
+    if code:
+        head_parts.append(str(code))
+    if provider:
+        head_parts.append(provider)
+    head = " ".join(head_parts) if head_parts else type(e).__name__
+    return f"{head}: {msg}"[:240]
+
+
+def _call_llm(text: str, log_md_text: str) -> tuple[str | None, str | None]:
+    """Return (answer, error). At most one is non-None.
+
+    LiteLLM handles transient retries internally via `num_retries`; we only
+    see the failure after they're exhausted, which means it's worth surfacing
+    to the user (they can retry by asking again).
     """
     _hydrate_secret_into_env(QA_MODEL)
     var = _required_key_var(QA_MODEL)
     if var and not os.environ.get(var):
-        return f"(LLM not configured: {var} not set and no /run/secrets/{var})"
+        return None, f"LLM not configured: {var} not set and no /run/secrets/{var}"
 
-    # Local import: litellm cold-start is non-trivial; keep it out of api boot.
-    from litellm import completion  # noqa: PLC0415
+    from litellm import completion  # noqa: PLC0415 — defer cold-start
 
     user_msg = (
-        f"<log>\n{log_md_text}\n</log>\n\n"
+        f"<log>\n{_simplify_log_for_grounding(log_md_text)}\n</log>\n\n"
         f"Otázka: {text}\n\n"
         f"Odpověď:"
     )
@@ -123,18 +168,23 @@ def _call_llm(text: str, log_md_text: str) -> str:
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.2,
+            # LiteLLM handles 429/503/timeout-style transients internally and
+            # only raises after exhaustion. Three tries with default backoff.
+            num_retries=3,
+            timeout=30,
         )
     except Exception as e:
-        log.exception("LLM call failed")
-        return f"(LLM error: {type(e).__name__}: {e})"
+        log.exception("LLM call failed after retries")
+        return None, _short_error(e)
     try:
-        return resp.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip(), None
     except (AttributeError, IndexError, KeyError) as e:
         log.error("unexpected LLM response shape: %r", resp)
-        return f"(LLM bad response shape: {e})"
+        return None, f"bad LLM response shape: {e}"
 
 
 def classify_and_answer(text: str, log_md_text: str = "") -> QAResult:
     if not _looks_like_question(text):
-        return QAResult(is_question=False, answer=None)
-    return QAResult(is_question=True, answer=_call_llm(text, log_md_text))
+        return QAResult(is_question=False)
+    answer, error = _call_llm(text, log_md_text)
+    return QAResult(is_question=True, answer=answer, error=error)
