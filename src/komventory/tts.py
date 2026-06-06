@@ -21,31 +21,42 @@ from . import config
 
 log = logging.getLogger(__name__)
 
-DEFAULT_VOICE = "cs_CZ-jirka-medium"
+DEFAULT_VOICE = config.TTS_VOICE
 
 # rhasspy/piper-voices on huggingface — canonical home for community Piper voices.
 # Layout: <lang>/<locale>/<name>/<quality>/<voice>.onnx and .onnx.json
 _HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
 
+# Voices hosted outside rhasspy/piper-voices. Short name → directory URL holding
+# model.onnx + model.onnx.json. Both thomcles variants are cs_CZ-jirka-medium
+# fine-tuned on Thomcles/Czech-Speech-Monospeaker ("Honza"). No license stated.
+_CUSTOM_VOICES = {
+    "thomcles-medium": "https://huggingface.co/Thomcles/Piper-TTS-Czech/resolve/main/medium",
+    "thomcles-high": "https://huggingface.co/Thomcles/Piper-TTS-Czech/resolve/main/high",
+}
 
-def _voice_url_parts(voice: str) -> tuple[str, str]:
-    # e.g. cs_CZ-jirka-medium → ("cs/cs_CZ/jirka/medium", "cs_CZ-jirka-medium")
+
+def _voice_urls(voice: str) -> tuple[str, str]:
+    """Return (onnx_url, json_url) for `voice`."""
+    if voice in _CUSTOM_VOICES:
+        base = _CUSTOM_VOICES[voice]
+        return f"{base}/model.onnx", f"{base}/model.onnx.json"
+    # e.g. cs_CZ-jirka-medium → cs/cs_CZ/jirka/medium/cs_CZ-jirka-medium
     locale, name, quality = voice.split("-")
     lang = locale.split("_")[0]
-    sub = f"{lang}/{locale}/{name}/{quality}"
-    return sub, voice
+    base = f"{_HF_BASE}/{lang}/{locale}/{name}/{quality}/{voice}"
+    return f"{base}.onnx", f"{base}.onnx.json"
 
 
 def _ensure_voice(cache_dir: Path, voice: str) -> Path:
-    sub, base = _voice_url_parts(voice)
+    onnx_url, json_url = _voice_urls(voice)
     voice_dir = cache_dir / voice
     voice_dir.mkdir(parents=True, exist_ok=True)
-    onnx = voice_dir / f"{base}.onnx"
-    cfg = voice_dir / f"{base}.onnx.json"
-    for path, suffix in ((onnx, ".onnx"), (cfg, ".onnx.json")):
+    onnx = voice_dir / f"{voice}.onnx"
+    cfg = voice_dir / f"{voice}.onnx.json"
+    for path, url in ((onnx, onnx_url), (cfg, json_url)):
         if path.exists() and path.stat().st_size > 0:
             continue
-        url = f"{_HF_BASE}/{sub}/{base}{suffix}"
         log.info("downloading piper voice asset: %s", url)
         with urllib.request.urlopen(url, timeout=120) as r, open(path, "wb") as f:
             while chunk := r.read(1 << 16):
@@ -71,7 +82,7 @@ def _load_voice(onnx_path: Path):
 def synthesize_wav(text: str, voice: str = DEFAULT_VOICE, paths: config.Paths | None = None) -> bytes:
     """Synthesise `text` to a WAV byte string at the voice's native sample rate.
 
-    First call per voice downloads the model files (~60MB) and loads the Piper
+    First call per voice downloads the model files (~60–90MB) and loads the Piper
     voice into memory; subsequent calls reuse the loaded model.
     """
     paths = paths or config.load_paths()

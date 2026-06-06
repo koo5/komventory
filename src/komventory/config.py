@@ -74,6 +74,11 @@ WHISPER_LANG = os.environ.get("KOMVENTORY_WHISPER_LANG") or None  # None → aut
 
 VIDEO_FRAME_INTERVAL_S = float(os.environ.get("KOMVENTORY_FRAME_INTERVAL_S", "5"))
 
+# Default Piper voice for /api/tts. "thomcles-high" is jirka-medium fine-tuned
+# on Thomcles/Czech-Speech-Monospeaker; "cs_CZ-jirka-medium" remains selectable
+# per-request via the `voice` field for A/B comparison.
+TTS_VOICE = os.environ.get("KOMVENTORY_TTS_VOICE", "thomcles-high")
+
 # Git remote/branch used by sync.pull(). Explicit (rather than relying on upstream
 # tracking) so the pull doesn't fail just because no `branch.<x>.merge` is set.
 GIT_REMOTE = os.environ.get("KOMVENTORY_GIT_REMOTE", "origin")
