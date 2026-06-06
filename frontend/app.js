@@ -341,13 +341,18 @@ async function startRecording() {
       // 1 frame is tight — bumping to 8 gives ~250ms leadup so hard consonants
       // (k-, p-, t-) at word starts don't get clipped. Same idea for the tail
       // via redemptionFrames (silence tolerated mid-utterance before cutoff).
+      // Frame size at default frameSamples=1536 / 16kHz ≈ 96ms.
+      //   redemptionFrames:  40 → ~3.8s  (current — comfortable thinking pauses)
+      //   redemptionFrames:  64 → ~6s
+      //   redemptionFrames: 104 → ~10s   (matches the original "10s silence" target)
       preSpeechPadFrames: 8,
-      redemptionFrames: 16,
+      redemptionFrames: 64,
       minSpeechFrames: 3,
       onSpeechStart: () => {
-        // Barge-in: if the assistant was speaking, shut it up the moment the
-        // user starts. Stop, don't pause — we want this round's TTS gone.
+        // Barge-in: if either the assistant (TTS) or the mic-replay echo was
+        // playing, shut both up the moment the user starts. Stop, don't pause.
         stopTts();
+        stopEcho();
         dotEl.classList.add("on");
         setStatus("mluvíš…", "busy");
       },
@@ -428,6 +433,13 @@ async function askMaybe(text, anchorSource) {
 
 // ------------------------------------------------------------------- tts --
 let ttsAudio = null;
+let echoSource = null;  // active mic-replay BufferSourceNode, if any
+
+function stopEcho() {
+  if (!echoSource) return;
+  try { echoSource.stop(); } catch {}
+  echoSource = null;
+}
 
 function stopTts() {
   // Full stop — paused playback would silently resume if the same audio
@@ -459,7 +471,10 @@ async function speakBack(text) {
   }
   if (!r.ok) return;
   const blob = await r.blob();
-  stopTts();  // discard anything still in flight before starting fresh
+  stopTts();
+  // Cut off any in-flight mic-replay so the TTS doesn't overlap with the
+  // user's own voice playing back at them — TTS wins.
+  stopEcho();
   ttsAudio = new Audio(URL.createObjectURL(blob));
   ttsAudio.play().catch(() => { /* autoplay can fail; user must interact first */ });
 }
@@ -469,13 +484,17 @@ async function speakBack(text) {
 // we can feed the same Float32 buffer the VAD handed us without re-encoding.
 function playRecording(float32, sampleRate = 16000) {
   if (!audioCtx) return;
+  // Replace any prior replay so we don't accumulate overlapping echoes.
+  stopEcho();
   try {
     const buf = audioCtx.createBuffer(1, float32.length, sampleRate);
     buf.copyToChannel(float32, 0);
     const src = audioCtx.createBufferSource();
     src.buffer = buf;
     src.connect(audioCtx.destination);
+    src.onended = () => { if (echoSource === src) echoSource = null; };
     src.start();
+    echoSource = src;
   } catch (e) {
     console.warn("[echo] playback failed", e);
   }
