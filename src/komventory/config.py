@@ -74,10 +74,10 @@ WHISPER_LANG = os.environ.get("KOMVENTORY_WHISPER_LANG") or None  # None → aut
 
 VIDEO_FRAME_INTERVAL_S = float(os.environ.get("KOMVENTORY_FRAME_INTERVAL_S", "5"))
 
-# Default Piper voice for /api/tts. "thomcles-high" is jirka-medium fine-tuned
-# on Thomcles/Czech-Speech-Monospeaker; "cs_CZ-jirka-medium" remains selectable
-# per-request via the `voice` field for A/B comparison.
-TTS_VOICE = os.environ.get("KOMVENTORY_TTS_VOICE", "thomcles-high")
+# Default Piper voice for /api/tts. Alternatives tried and rejected (2026-06):
+# thomcles-medium/high (jirka fine-tune, worse quality) stay selectable via the
+# `voice` request field; Chatterbox-cs was ~3.5x slower than realtime on CPU.
+TTS_VOICE = os.environ.get("KOMVENTORY_TTS_VOICE", "cs_CZ-jirka-medium")
 
 # Git remote/branch used by sync.pull(). Explicit (rather than relying on upstream
 # tracking) so the pull doesn't fail just because no `branch.<x>.merge` is set.

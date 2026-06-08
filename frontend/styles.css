@@ -40,6 +40,12 @@ header h1 {
   font-size: 1.1rem;
   font-weight: 600;
 }
+header a {
+  font-size: 0.85rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+header a:hover { color: var(--accent); }
 .status {
   font-size: 0.85rem;
   color: var(--muted);
@@ -167,14 +173,20 @@ footer {
 .opt input { accent-color: var(--accent); }
 
 #meter {
-  height: 32px;
-  width: 200px;
-  border-radius: 0.3rem;
+  display: none;          /* hidden until recOn — see body.rec-on rule below */
+  flex: 1;
+  height: 40px;
+  border-radius: 0.5rem;
   background: var(--bubble-bg);
   border: 1px solid var(--border);
   image-rendering: pixelated;
 }
 #meter[hidden] { display: none; }
+
+/* Recording mode: meter takes the text input's row, input steps aside. The
+ * send button stays put and acts as "flush mic" while text is empty. */
+body.rec-on #text-input { display: none; }
+body.rec-on #meter { display: block; }
 
 .dot {
   display: inline-block;

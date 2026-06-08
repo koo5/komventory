@@ -68,7 +68,7 @@ uv run komventory paths
 
 - Type a note or hit **🎙 záznam** to start continuous VAD-chunked recording (Silero VAD in the browser).
 - Each detected utterance posts to `/api/notes/audio` → Whisper → entry in `log.md`.
-- "mluvit zpět" reads transcripts back in Czech (Piper, `thomcles-high` — [Thomcles/Piper-TTS-Czech](https://huggingface.co/Thomcles/Piper-TTS-Czech), a jirka fine-tune — auto-downloaded on first use; override with `KOMVENTORY_TTS_VOICE`, `cs_CZ-jirka-medium` still works per-request via `voice`).
+- "mluvit zpět" reads transcripts back in Czech (Piper, `cs_CZ-jirka-medium`, auto-downloaded on first use; override with `KOMVENTORY_TTS_VOICE` — e.g. `thomcles-medium`/`thomcles-high`, a [jirka fine-tune](https://huggingface.co/Thomcles/Piper-TTS-Czech)).
 - "odpovídat na otázky" routes utterances that look like questions through `/api/ask` (LLM is **stubbed** for v1 — wire a real backend in `src/komventory/qa.py:_call_llm`).
 
 Mobile mic requires HTTPS. Reverse-proxy from your existing Caddy (or any HTTPS front), passing the SSE endpoint through unbuffered:

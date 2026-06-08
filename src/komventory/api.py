@@ -3,6 +3,8 @@
 Shape:
   GET  /                      — PWA index.html
   GET  /static/*              — PWA static assets
+  GET  /log.html              — full rendered log (re-rendered when stale)
+  GET  /media/*               — log attachments (relative links in log.html)
   GET  /api/log/recent?n=50   — recent entries as JSON
   GET  /api/log/stream        — SSE pings on log.md change (client refetches)
   POST /api/notes/text        — JSON {body, where?} → entry
@@ -102,6 +104,21 @@ def manifest() -> FileResponse:
 def service_worker() -> FileResponse:
     # Service workers need same-origin + correct MIME; FileResponse handles MIME.
     return FileResponse(_frontend_dir() / "sw.js", media_type="application/javascript")
+
+
+@app.get("/log.html")
+def full_log() -> FileResponse:
+    """Full rendered log. Normally kept fresh by the post-write auto-render;
+    the staleness check here covers hand-edits to log.md that bypass the API."""
+    paths = config.load_paths()
+    out = paths.log_md.with_suffix(".html")
+    if paths.log_md.exists() and (
+        not out.exists() or out.stat().st_mtime < paths.log_md.stat().st_mtime
+    ):
+        _render_safe(paths)
+    if not out.exists():
+        raise HTTPException(status_code=404, detail="log.html not rendered yet")
+    return FileResponse(out)
 
 
 # ------------------------------------------------------------------- log --
@@ -338,6 +355,10 @@ def _mount_static() -> None:
         app.mount("/static", StaticFiles(directory=frontend), name="static")
     else:
         log.warning("frontend dir not found at %s; /static will 404", frontend)
+    # log.html references attachments as relative `media/...` links; served at
+    # /log.html those resolve to /media/*. check_dir=False: dir may not exist yet.
+    media = config.load_paths().media
+    app.mount("/media", StaticFiles(directory=media, check_dir=False), name="media")
 
 
 _mount_static()

@@ -11,6 +11,7 @@
 <body>
   <header>
     <h1>komventory</h1>
+    <a href="/log.html" data-testid="full-log-link" target="_blank" rel="noopener">celý log →</a>
   </header>
 
   <main id="log" data-testid="log"></main>
@@ -24,12 +25,12 @@
         placeholder="napiš poznámku nebo otázku…"
         autocomplete="off"
         autocapitalize="sentences">
+      <canvas id="meter" data-testid="meter" width="240" height="36" aria-label="vstupní signál"></canvas>
       <button type="submit" data-testid="send-text">↵</button>
     </form>
 
     <div class="controls">
       <button id="rec-toggle" data-testid="rec-toggle" class="rec">🎙 záznam</button>
-      <canvas id="meter" data-testid="meter" width="240" height="36" aria-label="vstupní signál"></canvas>
       <span id="speaking-dot" data-testid="speaking-dot" class="dot" title="mluvíš"></span>
       <label class="opt">
         <input type="checkbox" id="opt-tts" data-testid="opt-tts" checked>

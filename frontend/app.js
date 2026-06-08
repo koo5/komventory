@@ -27,11 +27,18 @@ const meterEl = $("#meter");
 const dotEl = $("#speaking-dot");
 
 let micVad = null;          // MicVAD instance, created per record session (torn down on stop)
-let micStream = null;       // owned MediaStream, teed to VAD + analyser
+let micStream = null;       // owned MediaStream, teed to VAD + analyser + MediaRecorder
 let audioCtx = null;        // AudioContext for the analyser
 let analyser = null;        // AnalyserNode tapped off micStream
 let meterRaf = 0;           // requestAnimationFrame handle for the scope
 let recOn = false;
+// MediaRecorder runs in parallel with VAD on the same MediaStream so the user
+// can "send now" mid-utterance without waiting for the silence trigger. VAD
+// still owns the auto-chunk-on-silence path (Float32 → WAV via uploadAudio);
+// the manual path stops + drains MediaRecorder's encoded blob and uploads it.
+// We restart MediaRecorder after every successful upload (VAD or manual) so
+// its buffer never carries audio that's already been transcribed.
+let mediaRec = null;
 
 // ----------------------------------------------------------------- status --
 function setStatus(text, kind) {
@@ -174,7 +181,12 @@ function subscribeSSE() {
 textForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const body = textInput.value.trim();
-  if (!body) return;
+  if (!body) {
+    // Dual role: empty text input + recording → flush the live MediaRecorder
+    // buffer as a manual "send what I've said so far, keep listening" chunk.
+    if (recOn) flushNow();
+    return;
+  }
   textInput.value = "";
   setStatus("ukládám…", "busy");
   const r = await fetch("/api/notes/text", {
@@ -245,6 +257,95 @@ function normalizeFloat32(buf, targetPeak = 0.9, maxGain = 50) {
   return out;
 }
 
+// ---------------------------------------------------- parallel MediaRecorder --
+function _pickMediaRecMime() {
+  // Order: most-supported-encoded-modern → fallback. webm/opus is widely
+  // supported on Chromium/Firefox/Android; mp4 covers Safari.
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  for (const c of candidates) {
+    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(c)) return c;
+  }
+  return "";  // let the browser pick whatever it likes
+}
+
+function startMediaRec() {
+  if (!micStream || mediaRec) return;
+  try {
+    const mime = _pickMediaRecMime();
+    mediaRec = new MediaRecorder(micStream, mime ? {mimeType: mime} : undefined);
+    mediaRec.start();
+  } catch (e) {
+    console.error("MediaRecorder start failed:", e);
+    mediaRec = null;
+  }
+}
+
+// Stop the recorder, await its final dataavailable, and return the blob (or
+// null if nothing was captured / recorder wasn't running).
+function stopAndDrainMediaRec() {
+  if (!mediaRec) return Promise.resolve(null);
+  const rec = mediaRec;
+  mediaRec = null;
+  return new Promise((resolve) => {
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => {
+      if (!chunks.length) { resolve(null); return; }
+      const type = chunks[0].type || "audio/webm";
+      resolve(new Blob(chunks, {type}));
+    };
+    try { rec.stop(); } catch { resolve(null); }
+  });
+}
+
+// Called after every successful audio upload (VAD or manual) so the recorder's
+// buffer doesn't carry already-transcribed audio.
+async function resetMediaRec() {
+  await stopAndDrainMediaRec();  // discard whatever was captured
+  startMediaRec();
+}
+
+async function uploadBlob(blob, filename) {
+  if (!blob || blob.size === 0) return;
+  const form = new FormData();
+  form.append("file", blob, filename);
+  setStatus("přepisuji…", "busy");
+  let r;
+  try {
+    r = await fetch("/api/notes/audio", {method: "POST", body: form});
+  } catch (e) {
+    setStatus("upload selhal", "error");
+    return;
+  }
+  if (r.status === 204) {
+    setStatus(recOn ? "poslouchám…" : "připraveno");
+    return;
+  }
+  if (!r.ok) {
+    setStatus(`audio: HTTP ${r.status}`, "error");
+    return;
+  }
+  const entry = await r.json();
+  setStatus(recOn ? "poslouchám…" : "připraveno");
+  fetchLog();
+  if (entry.body) {
+    if (optTts.checked) speakBack(entry.body);
+    if (optAsk.checked) askMaybe(entry.body, entry.source);
+  }
+}
+
+// Manual flush: take whatever MediaRecorder has captured since the last
+// upload, send it, and continue listening fresh. Called by the text-send
+// button when no text is staged (the button's dual role).
+async function flushNow() {
+  if (!recOn) return;
+  const blob = await stopAndDrainMediaRec();
+  startMediaRec();  // resume immediately so we don't drop the next utterance
+  if (!blob) return;
+  const ext = blob.type.includes("mp4") ? "m4a" : "webm";
+  uploadBlob(blob, `manual-${Date.now()}.${ext}`);
+}
+
 async function uploadAudio(float32) {
   const normalized = normalizeFloat32(float32);
   const wav = floatToWav(normalized, 16000);
@@ -279,18 +380,30 @@ async function uploadAudio(float32) {
 // honestly shows "the mic is hearing you" — silent room → flat line, voice →
 // wiggle. Not a level meter; pair with the speaking-dot (VAD-driven) for the
 // "you crossed the speech threshold" signal.
+function _sizeMeterToDisplay() {
+  // The canvas grew via CSS (flex:1 in the text-form row); resync its drawing
+  // buffer to its laid-out size so the waveform isn't bilinearly stretched
+  // from the 240-pixel default. Use devicePixelRatio for crisp rendering on
+  // hi-DPI screens.
+  const r = meterEl.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  meterEl.width = Math.max(1, Math.floor(r.width * dpr));
+  meterEl.height = Math.max(1, Math.floor(r.height * dpr));
+}
+
 function startMeter() {
   if (!analyser) return;
+  _sizeMeterToDisplay();
   const ctx = meterEl.getContext("2d");
-  const W = meterEl.width, H = meterEl.height;
   const data = new Uint8Array(analyser.fftSize);
   function frame() {
     if (!recOn || !analyser) return;
+    const W = meterEl.width, H = meterEl.height;
     analyser.getByteTimeDomainData(data);
     ctx.fillStyle = "rgba(29,31,33,0.55)";  // motion-blur trail
     ctx.fillRect(0, 0, W, H);
     ctx.strokeStyle = "#ffd86b";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
     ctx.beginPath();
     const step = data.length / W;
     for (let x = 0; x < W; x++) {
@@ -305,6 +418,10 @@ function startMeter() {
   cancelAnimationFrame(meterRaf);
   meterRaf = requestAnimationFrame(frame);
 }
+
+// Re-sync canvas buffer if the window resizes mid-recording. Cheap because
+// no-op when recOn is false.
+window.addEventListener("resize", () => { if (recOn) _sizeMeterToDisplay(); });
 
 function stopMeter() {
   cancelAnimationFrame(meterRaf);
@@ -360,6 +477,10 @@ async function startRecording() {
         dotEl.classList.remove("on");
         if (optEcho.checked) playRecording(audio, 16000);
         uploadAudio(audio);
+        // VAD just consumed this stretch of audio; restart MediaRecorder so
+        // its parallel buffer doesn't carry the same speech a second time
+        // when the user later hits "send".
+        resetMediaRec();
       },
       onVADMisfire: () => { dotEl.classList.remove("on"); setStatus(recOn ? "poslouchám…" : "připraveno"); },
     });
@@ -371,10 +492,12 @@ async function startRecording() {
     return;
   }
   recOn = true;
+  document.body.classList.add("rec-on");  // swaps text input ↔ meter via CSS
   recBtn.classList.add("active");
-  recBtn.textContent = "⏸ stop";
+  recBtn.textContent = "⏹ stop";
   setStatus("poslouchám…");
   startMeter();
+  startMediaRec();
 }
 
 function teardownAudio() {
@@ -397,10 +520,14 @@ function teardownAudio() {
 
 function stopRecording() {
   recOn = false;
+  document.body.classList.remove("rec-on");
   recBtn.classList.remove("active");
   recBtn.textContent = "🎙 záznam";
   dotEl.classList.remove("on");
   stopMeter();
+  // Cancel semantics: discard any in-flight MediaRecorder buffer. The user
+  // chose stop, not send.
+  if (mediaRec) { try { mediaRec.stop(); } catch {} mediaRec = null; }
   teardownAudio();
   setStatus("připraveno");
 }
