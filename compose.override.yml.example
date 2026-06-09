@@ -1,0 +1,27 @@
+# Host-specific bind mounts. Copy to `compose.override.yml` (gitignored) and edit;
+# `docker compose` auto-merges it over compose.yml. Volume entries with the same
+# container path replace the base; new container paths are added.
+#
+# Nothing here is required — compose.yml runs self-contained. Use this only to
+# wire the containers up to real folders on your machine. The mount list is
+# defined once below and aliased into both services.
+
+x-host-mounts: &host-mounts
+  # Phone-sync source folders, overlaid (read-only) onto the inbox paths the
+  # ingester already watches. Replace with wherever your shares actually live.
+  - /home/you/sync/recordings:/data/inbox/audio:ro
+  - /home/you/sync/dcim:/data/inbox/video:ro
+  # Optional: your own git config instead of the bundled safe.directory=* one.
+  #- /home/you/.gitconfig:/etc/gitconfig:ro
+  # Optional host-to-host log sync: a peer clone of data/log/ mounted at the SAME
+  # path on both machines so git remote URLs resolve identically.
+  #- /home/you/log:/home/you/log
+  # Optional: provider-key files elsewhere (replaces the bundled ./secrets mount).
+  # Or just set GEMINI_API_KEY in .env.
+  #- /home/you/secrets:/run/secrets:ro
+
+services:
+  komventory:
+    volumes: *host-mounts
+  komventory-api:
+    volumes: *host-mounts

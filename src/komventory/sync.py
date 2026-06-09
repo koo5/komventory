@@ -1,6 +1,6 @@
 """Git-backed sync layer on top of the cross-process lock.
 
-`data/log` is a git working tree shared with a peer clone (e.g. `/home/koom/log`).
+`data/log` is a git working tree shared with a peer clone (e.g. `/home/you/log`).
 Before any operation that touches `log.md` we `git pull --ff-only` so we
 don't write on top of stale state. On pull failure we behave like the lock
 itself: log a warning, release the lock, sleep, retry.
@@ -41,6 +41,29 @@ class GitCommitFailed(Exception):
 
 def _is_git_repo(path: Path) -> bool:
     return (path / ".git").exists()
+
+
+def _ensure_git_repo(path: Path) -> bool:
+    """`git init` the log dir on first use so entries are versioned out of the
+    box — no manual setup. Idempotent (a no-op once `.git` exists). Returns
+    False (skip versioning) only if the dir doesn't exist yet or init fails;
+    host-to-host sync stays opt-in (add a remote to the repo afterwards).
+
+    Default branch + `safe.directory` come from the mounted gitconfig; commit
+    identity from the GIT_*_NAME/EMAIL env. See compose.yml / docker/gitconfig.
+    """
+    if _is_git_repo(path):
+        return True
+    if not path.is_dir():
+        return False
+    r = subprocess.run(
+        ["git", "-C", str(path), "init", "-q"], capture_output=True, text=True
+    )
+    if r.returncode != 0:
+        log.warning("git init failed for %s: %s", path, r.stderr.strip())
+        return False
+    log.info("initialised git repo for the log at %s", path)
+    return True
 
 
 def _has_remote(path: Path) -> bool:
@@ -89,8 +112,8 @@ def commit(repo_path: Path, message: str) -> bool:
     is a derived view, and `.idea/`/`.gitkeep` are noise. Either or both files
     being dirty triggers a commit; if both are clean, returns False.
     """
-    if not _is_git_repo(repo_path):
-        log.debug("not a git repo, skipping commit: %s", repo_path)
+    if not _ensure_git_repo(repo_path):
+        log.debug("log dir not present yet, nothing to commit: %s", repo_path)
         return False
     present = [f for f in VERSIONED_FILES if (repo_path / f).exists()]
     if not present:

@@ -1,0 +1,13 @@
+# Minimal git config mounted into the containers at /etc/gitconfig.
+#
+# The watcher commits into data/log/ (a git working tree on a bind mount); git
+# would otherwise refuse with "detected dubious ownership" because the mounted
+# tree isn't owned by the in-container user. safe.directory = * waives that.
+#
+# Commit identity comes from the GIT_AUTHOR_*/GIT_COMMITTER_* env vars in
+# compose.yml, not from here. To use your own host config instead, point
+# KOMVENTORY_GITCONFIG at it in .env (e.g. /home/you/.gitconfig).
+[safe]
+	directory = *
+[init]
+	defaultBranch = main

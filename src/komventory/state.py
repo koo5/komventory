@@ -4,7 +4,7 @@ Phone-synced inboxes are mounted read-only, so we can't delete sources after
 ingest. Instead we record `(size, mtime)` per file in a JSON ledger and skip
 on subsequent runs. Keys are `<subdir>/<rel-under-subdir>` — independent of
 where the inbox subdir physically lives, so a host with the source at
-`/home/koom/d/sync/...` and a container with it mounted at `/data/inbox/audio`
+`/home/you/sync/...` and a container with it mounted at `/data/inbox/audio`
 share the same ledger.
 """
 

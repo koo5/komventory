@@ -8,6 +8,8 @@ Personal/community inventory tool. A timestamped, append-only event log (`data/l
 - **One-time Google Doc import** of the existing `inventory_final.md` (TODO: `komventory import-gdoc <path>`).
 - **Later: a sandboxed reasoning VM ("openclaw")** that reads `data/log/log.md` and drops new notes into `data/inbox/openclaw/`.
 
+See [ROADMAP.md](ROADMAP.md) for where this is headed (Svelte frontend rewrite, the video-as-ambient-context plan, and other deferred work).
+
 Entries look like:
 
 ```markdown
@@ -35,6 +37,31 @@ src/komventory/           the package
 docker/Dockerfile         uv + ffmpeg + faster-whisper
 compose.yml               default service: `komventory watch`
 ```
+
+## Configuration
+
+Out of the box the defaults are **self-contained**: all state lives under `./data`,
+audio/video are read from `./data/inbox/{audio,video}`, and the watcher commits with
+a baked-in git identity — so a fresh clone runs with no external setup. Two gitignored
+files tailor it to your machine:
+
+```sh
+cp .env.example .env                              # scalar settings
+cp compose.override.yml.example compose.override.yml   # host bind mounts
+```
+
+- **`.env`** — scalar knobs compose substitutes in: `KOMVENTORY_LANG`, the Whisper
+  and Q&A models, a `GEMINI_API_KEY` for the Q&A feature, and `KOMVENTORY_UIDGID`
+  (set to your `id -u`:`id -g` if you're not `1000:1000`).
+- **`compose.override.yml`** — host-specific bind mounts, auto-merged by docker
+  compose: point the containers at your real phone-sync folders (overlaid onto
+  `/data/inbox/{audio,video}`), your own gitconfig, a key file, or a peer log clone.
+
+Nothing under `data/` needs creating by hand: `data/log/` and `log.md` are made on
+the first note, and `data/log/` is **auto-initialised as a git repo** so every
+entry is versioned from the start. Host-to-host sync stays opt-in — add a remote
+to `data/log/` (e.g. a peer clone mounted via `compose.override.yml`) and the
+watcher pulls/pushes through it.
 
 ## Running
 

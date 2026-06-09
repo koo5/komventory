@@ -4,24 +4,24 @@ __pycache__/
 .uv/
 .python-version
 
-# Mutable state — personal data and host-specific symlinks live outside git.
-# Track the layout via .gitkeep markers in dirs we own (not the symlinked ones).
+# All runtime state — personal notes, log.md, media, model cache, and any
+# host-specific clones/symlinks — lives under data/. None of it is git's
+# business; we keep only an empty mount-point anchor so the bind mount resolves.
 data/*
 !data/.gitkeep
-!data/log/
-data/log/*
-!data/log/.gitkeep
-!data/inbox/
-data/inbox/*
-!data/inbox/.gitkeep
-!data/inbox/openclaw/
-!data/inbox/imports/
-data/inbox/openclaw/*
-data/inbox/imports/*
-!data/inbox/openclaw/.gitkeep
-!data/inbox/imports/.gitkeep
+
+# Provider API keys (one file per key, read by qa.py). Never commit these.
+secrets/*
+!secrets/.gitkeep
+
 .claude/
 .dev_intention
 
-# Local compose overrides (KOMVENTORY_LANG etc). .env.example is the tracked template.
+# Local compose overrides — scalar settings (host UID, API keys, language, model).
+# .env.example is the tracked template; copy it to .env (gitignored) and edit.
 .env
+
+# Host-specific bind mounts. compose.override.yml.example is the tracked template;
+# copy it to compose.override.yml (gitignored) — docker auto-merges it.
+compose.override.yml
+secrets/

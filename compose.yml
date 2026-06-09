@@ -1,102 +1,80 @@
+# Host-specific bind mounts (external phone-sync folders, your own gitconfig,
+# peer log clone) go in compose.override.yml — see compose.override.yml.example.
+# This file runs self-contained: all state under ./data, sources read from
+# /data/inbox/{audio,video}, a baked-in safe.directory git config.
+
+x-common: &common
+  image: komventory:dev
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  user: "${KOMVENTORY_UIDGID:-1000:1000}"
+  restart: unless-stopped
+
+# Both services run the same image and share data/ via the bind mount; mounting
+# the api-only paths (frontend, secrets) on the watcher too is harmless and keeps
+# this a single reusable block. Cross-process writes are serialised by the lock.
+x-common-volumes: &common-volumes
+  - ./data:/data                            # all state; inbox defaults to /data/inbox/{audio,video}
+  - ./src:/app/src                          # hot-reload during dev
+  - ./frontend:/app/frontend:ro             # served by the api service
+  # Minimal git config (safe.directory=*) for the watcher's commits; identity comes
+  # from GIT_*_NAME/EMAIL below. Mount your own config / external sources in compose.override.yml.
+  - ./docker/gitconfig:/etc/gitconfig:ro
+  # Provider-key files for Q&A (read by the api service); see compose.override.yml.example.
+  - ./secrets:/run/secrets:ro
+
+x-common-env: &common-env
+  # Content language (LLM prompts/answers, Whisper language, default TTS voice).
+  # Single switch — defaults to en; set KOMVENTORY_LANG=cs in .env for Czech.
+  KOMVENTORY_LANG: ${KOMVENTORY_LANG:-en}
+  # Phone and host both run Europe/Prague — interpret filename timestamps in that
+  # zone and match the container clock so logs/mtime are intuitive.
+  TZ: Europe/Prague
+  KOMVENTORY_TIMEZONE: Europe/Prague
+  # Distinct git identity for the containerised watcher's commits, so `git log`
+  # makes it obvious which came from the bot vs. you on the host.
+  GIT_AUTHOR_NAME: komventory
+  GIT_AUTHOR_EMAIL: komventory@container.local
+  GIT_COMMITTER_NAME: komventory
+  GIT_COMMITTER_EMAIL: komventory@container.local
+  # Whisper model. Default large-v3 (multilingual, auto-downloads in CT2 form).
+  # Set KOMVENTORY_WHISPER_MODEL in .env to an HF finetune for better accuracy
+  # (e.g. mikr/whisper-large-v3-czech-cv13) — but build its CT2 cache once on the
+  # host first, since this image has no torch:  scripts/warm-whisper-cache.fish
+  KOMVENTORY_WHISPER_MODEL: ${KOMVENTORY_WHISPER_MODEL:-large-v3}
+  KOMVENTORY_WHISPER_COMPUTE: int8
+
 services:
   komventory:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: komventory:dev
+    <<: *common
     container_name: komventory
-    # Stable hostname so the cross-process lock file shows a recognisable
-    # holder ("komventory-container") instead of a random Docker name.
+    # Stable hostname so the cross-process lock file shows a recognisable holder
+    # ("komventory-container") instead of a random Docker name.
     hostname: komventory-container
-    # Run as the host user so files created in bind mounts (ledger, media,
-    # log.md, model cache) are owned by you, not root. Change to match `id -u/-g`
-    # on your host if not 1000:1000.
-    user: "1000:1000"
-    volumes:
-      - ./data:/data
-      - ./src:/app/src                          # hot-reload during dev
-      # Phone-sync sources, read-only. Edit these two paths if your shares live elsewhere.
-      - /home/koom/d/sync/a22-recordings/Recording:/sources/audio:ro
-      - /home/koom/d/sync/a22dcim/OpenCamera:/sources/video:ro
-      # Peer clone of data/log/ that the host keeps in sync. Mounted at the same path as
-      # on the host so git remote URLs (e.g. `/home/koom/log`) resolve identically from
-      # both sides. Read/write so `git pull` can write into its ref/object store if it
-      # ever acts as the upstream.
-      - /home/koom/log:/home/koom/log
-      # Host gitconfig (for user.name/user.email on commits) mounted system-wide so
-      # the container reads it regardless of HOME. Read-only.
-      - /home/koom/.gitconfig:/etc/gitconfig:ro
-    environment:
-      # Point ingest at the bind-mounted sources rather than data/inbox/{audio,video}.
-      KOMVENTORY_INBOX_AUDIO: /sources/audio
-      KOMVENTORY_INBOX_VIDEO: /sources/video
-      # Content language (LLM prompts/answers, Whisper language, default TTS voice).
-      # Single switch — defaults to en; set KOMVENTORY_LANG=cs in .env for Czech.
-      KOMVENTORY_LANG: ${KOMVENTORY_LANG:-en}
-      # Phone and host both run Europe/Prague — interpret filename timestamps in that zone
-      # and have the container clock match so logs/mtime are intuitive.
-      TZ: Europe/Prague
-      KOMVENTORY_TIMEZONE: Europe/Prague
-      # Distinct git identity for commits made by the containerised watcher, so a quick
-      # `git log` makes it obvious which commits came from the bot vs. you on the host.
-      GIT_AUTHOR_NAME: komventory
-      GIT_AUTHOR_EMAIL: komventory@container.local
-      GIT_COMMITTER_NAME: komventory
-      GIT_COMMITTER_EMAIL: komventory@container.local
-      # Whisper model. Default large-v3 (multilingual, auto-downloads in CT2 form).
-      # Set KOMVENTORY_WHISPER_MODEL in .env to an HF finetune for better accuracy
-      # (e.g. mikr/whisper-large-v3-czech-cv13) — but build its CT2 cache once on
-      # the host first, since this image has no torch:  scripts/warm-whisper-cache.fish
-      KOMVENTORY_WHISPER_MODEL: ${KOMVENTORY_WHISPER_MODEL:-large-v3}
-      KOMVENTORY_WHISPER_COMPUTE: int8
-    restart: unless-stopped
+    volumes: *common-volumes
+    environment: *common-env
     # Default: watch inbox/. Override for one-shot:
     #   docker compose run --rm komventory komventory ingest
     command: ["komventory", "watch"]
 
   komventory-api:
-    # Reuses the watcher image — same Whisper model cache, same code, same env.
-    # The watcher and the API share data/ via the bind mount; cross-process
-    # writes are serialised by data/inbox/.lock (komventory's existing lock).
-    image: komventory:dev
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
+    <<: *common
     container_name: komventory-api
     hostname: komventory-api
-    user: "1000:1000"
     depends_on:
       - komventory
-    volumes:
-      - ./data:/data
-      - ./src:/app/src
-      - ./frontend:/app/frontend:ro
-      - /home/koom/d/sync/a22-recordings/Recording:/sources/audio:ro
-      - /home/koom/d/sync/a22dcim/OpenCamera:/sources/video:ro
-      - /home/koom/log:/home/koom/log
-      - /home/koom/.gitconfig:/etc/gitconfig:ro
-      # API-key files (one file per key, name = env var, contents = key).
-      # qa.py reads these on demand only when the matching env var is missing.
-      - /home/koom/secrets/GEMINI_API_KEY:/run/secrets/GEMINI_API_KEY:ro
+    volumes: *common-volumes
     environment:
-      KOMVENTORY_INBOX_AUDIO: /sources/audio
-      KOMVENTORY_INBOX_VIDEO: /sources/video
+      <<: *common-env
       KOMVENTORY_FRONTEND: /app/frontend
-      KOMVENTORY_QA_MODEL: gemini/gemini-2.5-flash
-      # Content language — single switch (LLM/Whisper/TTS). See watcher service above.
-      KOMVENTORY_LANG: ${KOMVENTORY_LANG:-en}
-      TZ: Europe/Prague
-      KOMVENTORY_TIMEZONE: Europe/Prague
-      GIT_AUTHOR_NAME: komventory
-      GIT_AUTHOR_EMAIL: komventory@container.local
-      GIT_COMMITTER_NAME: komventory
-      GIT_COMMITTER_EMAIL: komventory@container.local
-      # Same model as the watcher (shares the CT2 cache). See watcher comment above.
-      KOMVENTORY_WHISPER_MODEL: ${KOMVENTORY_WHISPER_MODEL:-large-v3}
-      KOMVENTORY_WHISPER_COMPUTE: int8
+      KOMVENTORY_QA_MODEL: ${KOMVENTORY_QA_MODEL:-gemini/gemini-2.5-flash}
+      # Q&A provider key. Set GEMINI_API_KEY in .env (simplest), or drop a key
+      # file in ./secrets/ (see the secrets mount above). Empty default is fine
+      # when the "answer questions" feature is unused.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     ports:
       - "3411:3411"
-    restart: unless-stopped
     command: ["komventory", "serve"]
 
   caddy:
@@ -106,6 +84,9 @@ services:
     ports:
       - "3410:3410"
     volumes:
-      - ./data/log:/srv:ro
+      # Mount ./data (which ships) rather than ./data/log — the latter doesn't
+      # exist on a fresh clone, so docker would create it root-owned before the
+      # watcher can, breaking the watcher's writes. Caddy roots at /srv/log.
+      - ./data:/srv:ro
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
     restart: unless-stopped

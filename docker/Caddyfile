@@ -1,10 +1,11 @@
-# Serves data/log/ (mounted at /srv inside the container) over HTTP on :3410
-# so log.html can render media via relative URLs and you can browse the
-# media/ tree from a browser. Read-only mount, so any "writes" via the
-# browser are no-ops.
+# Serves data/log/ over HTTP on :3410 so log.html can render media via relative
+# URLs and you can browse the media/ tree from a browser. ./data is mounted at
+# /srv (read-only) and we root at /srv/log — mounting the parent means docker
+# doesn't have to create data/log itself (which it would do as root, before the
+# watcher can). Read-only mount, so browser "writes" are no-ops.
 
 :3410 {
-	root * /srv
+	root * /srv/log
 	encode gzip
 
 	# Convenience: hitting the bare host:port lands on the rendered log.
