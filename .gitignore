@@ -24,4 +24,3 @@ secrets/*
 # Host-specific bind mounts. compose.override.yml.example is the tracked template;
 # copy it to compose.override.yml (gitignored) — docker auto-merges it.
 compose.override.yml
-secrets/
