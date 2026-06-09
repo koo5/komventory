@@ -30,6 +30,9 @@ services:
       # Point ingest at the bind-mounted sources rather than data/inbox/{audio,video}.
       KOMVENTORY_INBOX_AUDIO: /sources/audio
       KOMVENTORY_INBOX_VIDEO: /sources/video
+      # Content language (LLM prompts/answers, Whisper language, default TTS voice).
+      # Single switch — defaults to en; set KOMVENTORY_LANG=cs in .env for Czech.
+      KOMVENTORY_LANG: ${KOMVENTORY_LANG:-en}
       # Phone and host both run Europe/Prague — interpret filename timestamps in that zone
       # and have the container clock match so logs/mtime are intuitive.
       TZ: Europe/Prague
@@ -40,14 +43,11 @@ services:
       GIT_AUTHOR_EMAIL: komventory@container.local
       GIT_COMMITTER_NAME: komventory
       GIT_COMMITTER_EMAIL: komventory@container.local
-      # Whisper model. Defaults to Systran's published large-v3 (CT2-ready, auto-downloads).
-      # For better Czech orthography, switch to a Czech finetune from Hugging Face:
-      #   1) on the host:  uv sync --extra convert
-      #   2)               uv run komventory convert-model mikr/whisper-large-v3-turbo-cs-cv17
-      #   3) change this to the same name:
-      #        KOMVENTORY_WHISPER_MODEL: mikr/whisper-large-v3-turbo-cs-cv17
-      KOMVENTORY_WHISPER_MODEL: mikr/whisper-large-v3-czech-cv13
-      KOMVENTORY_WHISPER_LANG: cs
+      # Whisper model. Default large-v3 (multilingual, auto-downloads in CT2 form).
+      # Set KOMVENTORY_WHISPER_MODEL in .env to an HF finetune for better accuracy
+      # (e.g. mikr/whisper-large-v3-czech-cv13) — but build its CT2 cache once on
+      # the host first, since this image has no torch:  scripts/warm-whisper-cache.fish
+      KOMVENTORY_WHISPER_MODEL: ${KOMVENTORY_WHISPER_MODEL:-large-v3}
       KOMVENTORY_WHISPER_COMPUTE: int8
     restart: unless-stopped
     # Default: watch inbox/. Override for one-shot:
@@ -83,14 +83,16 @@ services:
       KOMVENTORY_INBOX_VIDEO: /sources/video
       KOMVENTORY_FRONTEND: /app/frontend
       KOMVENTORY_QA_MODEL: gemini/gemini-2.5-flash
+      # Content language — single switch (LLM/Whisper/TTS). See watcher service above.
+      KOMVENTORY_LANG: ${KOMVENTORY_LANG:-en}
       TZ: Europe/Prague
       KOMVENTORY_TIMEZONE: Europe/Prague
       GIT_AUTHOR_NAME: komventory
       GIT_AUTHOR_EMAIL: komventory@container.local
       GIT_COMMITTER_NAME: komventory
       GIT_COMMITTER_EMAIL: komventory@container.local
-      KOMVENTORY_WHISPER_MODEL: mikr/whisper-large-v3-czech-cv13
-      KOMVENTORY_WHISPER_LANG: cs
+      # Same model as the watcher (shares the CT2 cache). See watcher comment above.
+      KOMVENTORY_WHISPER_MODEL: ${KOMVENTORY_WHISPER_MODEL:-large-v3}
       KOMVENTORY_WHISPER_COMPUTE: int8
     ports:
       - "3411:3411"

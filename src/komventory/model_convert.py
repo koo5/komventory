@@ -12,12 +12,26 @@ automatically — no need to install torch inside the container.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import shutil
 import subprocess
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def can_convert() -> bool:
+    """True only where conversion can actually run — i.e. the `convert` extra
+    (torch + transformers) is importable.
+
+    NOT a PATH check: `ct2-transformers-converter` is a console script from
+    ctranslate2, which is installed for *inference* (faster-whisper needs it), so
+    it's on PATH in the container too — but loading an HF checkpoint still needs
+    torch + transformers, which the image deliberately omits. So the honest
+    signal is "are the heavy deps importable", which is False in the container.
+    """
+    return all(importlib.util.find_spec(m) is not None for m in ("torch", "transformers"))
 
 
 def converted_dir(hf_name: str, ct2_root: Path) -> Path:

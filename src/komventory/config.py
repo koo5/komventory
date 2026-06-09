@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import lang
+
+# Content language (notes / LLM prompts / answers / TTS). Single switch — see
+# lang.py. Default English; set KOMVENTORY_LANG=cs for the Czech deployment.
+LANG = lang.active()
+
 # Timezone used for entry timestamps. Host and phone both run Europe/Prague
 # (CET/CEST auto-switch), so this is what filenames like
 # `VID_20260515_122612.444.mp4` should be interpreted in.
@@ -65,19 +71,21 @@ def load_paths() -> Paths:
     )
 
 
-# Multilingual default (notes are mostly Czech). Set KOMVENTORY_WHISPER_LANG=cs
-# to skip language detection on each clip.
 WHISPER_MODEL = os.environ.get("KOMVENTORY_WHISPER_MODEL", "large-v3")
 WHISPER_DEVICE = os.environ.get("KOMVENTORY_WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE = os.environ.get("KOMVENTORY_WHISPER_COMPUTE", "int8")
-WHISPER_LANG = os.environ.get("KOMVENTORY_WHISPER_LANG") or None  # None → auto-detect
+# Transcription language follows the content language (KOMVENTORY_LANG); we pin
+# it rather than auto-detecting so short clips don't get misclassified.
+WHISPER_LANG = LANG.whisper_lang
 
 VIDEO_FRAME_INTERVAL_S = float(os.environ.get("KOMVENTORY_FRAME_INTERVAL_S", "5"))
 
-# Default Piper voice for /api/tts. Alternatives tried and rejected (2026-06):
-# thomcles-medium/high (jirka fine-tune, worse quality) stay selectable via the
-# `voice` request field; Chatterbox-cs was ~3.5x slower than realtime on CPU.
-TTS_VOICE = os.environ.get("KOMVENTORY_TTS_VOICE", "cs_CZ-jirka-medium")
+# Default Piper voice for /api/tts: the content language's voice unless
+# KOMVENTORY_TTS_VOICE overrides it (voice is a separate axis from language).
+# Czech alternatives tried and rejected (2026-06): thomcles-medium/high (jirka
+# fine-tune, worse quality) stay selectable via this var or the per-request
+# `voice` field; Chatterbox-cs was ~3.5x slower than realtime on CPU.
+TTS_VOICE = os.environ.get("KOMVENTORY_TTS_VOICE") or LANG.tts_voice
 
 # Git remote/branch used by sync.pull(). Explicit (rather than relying on upstream
 # tracking) so the pull doesn't fail just because no `branch.<x>.merge` is set.

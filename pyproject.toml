@@ -17,6 +17,12 @@ dependencies = [
     "python-multipart>=0.0.12",
     "piper-tts>=1.2",
     "litellm>=1.50",
+    # litellm lazy-imports tenacity for completion(num_retries=...) but doesn't
+    # declare it as a hard dep; without it our transient-retry path (qa.py) dies
+    # with a bogus "install tenacity" error instead of retrying the 503/429.
+    # Pinned exact to a release vetted by age (>1yr public) rather than letting
+    # the lock grab a freshly-published — and possibly compromised — version.
+    "tenacity==9.1.2",
     "python-ulid>=2.7",
 ]
 

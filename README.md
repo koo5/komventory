@@ -62,14 +62,30 @@ uv sync
 uv run komventory paths
 ```
 
+## Language
+
+The UI chrome (buttons, status text) is always English. The **content** language —
+LLM system prompt and answers, the question-detection heuristic, the Whisper
+transcription language, and the default TTS voice — is a single switch,
+`KOMVENTORY_LANG` (`en` default, or `cs`). `docker compose` reads it from a
+gitignored `.env`:
+
+```sh
+cp .env.example .env      # then set KOMVENTORY_LANG=cs for Czech
+```
+
+Adding a language is one `LangPack` in `src/komventory/lang.py`. Voice selection
+is independent of language — `KOMVENTORY_TTS_VOICE` overrides the language's
+default Piper voice.
+
 ## PWA (note-capture surface)
 
 `komventory-api` (compose service) serves a single-page web app on **port 3411**:
 
-- Type a note or hit **🎙 záznam** to start continuous VAD-chunked recording (Silero VAD in the browser).
+- Type a note or hit **🎙 record** to start continuous VAD-chunked recording (Silero VAD in the browser).
 - Each detected utterance posts to `/api/notes/audio` → Whisper → entry in `log.md`.
-- "mluvit zpět" reads transcripts back in Czech (Piper, `cs_CZ-jirka-medium`, auto-downloaded on first use; override with `KOMVENTORY_TTS_VOICE` — e.g. `thomcles-medium`/`thomcles-high`, a [jirka fine-tune](https://huggingface.co/Thomcles/Piper-TTS-Czech)).
-- "odpovídat na otázky" routes utterances that look like questions through `/api/ask` (LLM is **stubbed** for v1 — wire a real backend in `src/komventory/qa.py:_call_llm`).
+- "speak back" reads transcripts back via Piper. The voice defaults to the content language's (`en_US-lessac-medium` for en, `cs_CZ-jirka-medium` for cs), auto-downloaded on first use; override with `KOMVENTORY_TTS_VOICE` — e.g. `thomcles-medium`/`thomcles-high`, a [Czech jirka fine-tune](https://huggingface.co/Thomcles/Piper-TTS-Czech).
+- "answer questions" routes utterances that look like questions through `/api/ask` → the configured LLM (`KOMVENTORY_QA_MODEL`, default `gemini/gemini-2.5-flash`), grounded on `log.md`.
 
 Mobile mic requires HTTPS. Reverse-proxy from your existing Caddy (or any HTTPS front), passing the SSE endpoint through unbuffered:
 
@@ -86,4 +102,15 @@ The PWA and the API share one origin (Caddy fronts both `/` and `/api/*` at the 
 
 ## Whisper model
 
-Default `large-v3`, multilingual, pinned to Czech (`KOMVENTORY_WHISPER_LANG=cs`). On CPU with `int8` expect ~1–3× realtime; a backlog of phone videos can take hours. Override in `compose.yml` to `medium`/`small`/`base` for faster (lower quality) runs, or set `KOMVENTORY_WHISPER_DEVICE=cuda` if you have a GPU.
+Default `large-v3`, multilingual. The transcription *language* follows `KOMVENTORY_LANG` (see [Language](#language)). On CPU with `int8` expect ~1–3× realtime; a backlog of phone videos can take hours. For faster (lower quality) runs set `KOMVENTORY_WHISPER_MODEL=medium`/`small`/`base` in `.env`, or `KOMVENTORY_WHISPER_DEVICE=cuda` if you have a GPU.
+
+### HF finetunes (better per-language accuracy)
+
+Set `KOMVENTORY_WHISPER_MODEL` in `.env` to a Hugging Face finetune (e.g. `mikr/whisper-large-v3-czech-cv13`) for better orthography. These ship as plain Transformers checkpoints, so they need a one-time CTranslate2 conversion that pulls in **torch** — which the container image deliberately omits to stay slim. So you build the CT2 cache **once on the host**, and the container reads it via the bind-mounted `data/cache/whisper/ct2/`:
+
+```fish
+scripts/warm-whisper-cache.fish        # reads KOMVENTORY_WHISPER_MODEL from .env
+# equivalently: uv run --extra convert komventory convert-model mikr/whisper-large-v3-czech-cv13
+```
+
+After it finishes, (re)start the container — it picks the converted model up automatically. If you point the container at an unconverted finetune, transcription fails fast with a message telling you to run the script (it can't self-convert: no torch in the image). Built-in models like `large-v3` need none of this — they auto-download in CT2 form. A host-side `komventory ingest` also auto-converts on first use, since the host has the converter on `PATH`.

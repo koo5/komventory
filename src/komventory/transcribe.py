@@ -12,19 +12,27 @@ def _resolve_model_path(name: str, cache_root: Path) -> str:
     """Either pass `name` through (Systran-published model, faster-whisper auto-downloads)
     or resolve a `org/repo` HF name to a locally-converted CT2 directory.
 
-    Errors with clear remediation if an HF model name was given but no CT2 copy exists.
+    On a cache miss for an HF finetune we auto-convert *if* the converter is on
+    PATH — i.e. on the host, which carries torch via `--extra convert`. The
+    container ships without torch by design (model_convert.py), so there this
+    stays a clear, actionable error pointing at the host-side build instead.
     """
     if "/" not in name:
         return name
     ct2_root = cache_root / "ct2"
     if not model_convert.is_converted(name, ct2_root):
-        raise FileNotFoundError(
-            f"HF model {name!r} has no local CT2 copy.\n"
-            f"Run on the host (one-time):\n"
-            f"  uv sync --extra convert\n"
-            f"  uv run komventory convert-model {name}\n"
-            f"After it finishes, restart the container."
-        )
+        if model_convert.can_convert():
+            model_convert.convert(name, ct2_root)
+        else:
+            raise FileNotFoundError(
+                f"HF model {name!r} has no local CT2 copy, and the converter isn't\n"
+                f"available here (the container ships without torch by design).\n"
+                f"Build the cache once on the host:\n"
+                f"  scripts/warm-whisper-cache.fish\n"
+                f"  # or: uv run --extra convert komventory convert-model {name}\n"
+                f"It writes data/cache/whisper/ct2/, which the container reads via\n"
+                f"the bind mount — then restart the container."
+            )
     return str(model_convert.converted_dir(name, ct2_root))
 
 

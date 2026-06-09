@@ -90,20 +90,27 @@ app = FastAPI(title="komventory", version="0.1.0")
 
 
 # ---------------------------------------------------------------- static --
+# App-shell files are redeployed often and viewed on mobile (no hard-reload),
+# so revalidate every load — cheap 304 when unchanged, fresh code when not.
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(_frontend_dir() / "index.html")
+    return FileResponse(_frontend_dir() / "index.html", headers=_NO_CACHE)
 
 
 @app.get("/manifest.webmanifest")
 def manifest() -> FileResponse:
-    return FileResponse(_frontend_dir() / "manifest.webmanifest")
+    return FileResponse(_frontend_dir() / "manifest.webmanifest", headers=_NO_CACHE)
 
 
 @app.get("/sw.js")
 def service_worker() -> FileResponse:
     # Service workers need same-origin + correct MIME; FileResponse handles MIME.
-    return FileResponse(_frontend_dir() / "sw.js", media_type="application/javascript")
+    return FileResponse(
+        _frontend_dir() / "sw.js", media_type="application/javascript", headers=_NO_CACHE
+    )
 
 
 @app.get("/log.html")
@@ -347,12 +354,26 @@ def _render_safe(paths: config.Paths) -> None:
         log.exception("auto-render failed; log.md fine, log.html may be stale")
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles that tags every response `Cache-Control: no-cache`.
+
+    The frontend shell (app.js, styles.css) is redeployed often and viewed on
+    mobile, where there's no hard-reload. `no-cache` keeps the file cached but
+    forces revalidation against the ETag StaticFiles already sends, so an
+    unchanged asset returns a cheap 304 while edits show up immediately."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 def _mount_static() -> None:
     """Mount the frontend dir at /static. Tolerates missing dir at import time
     (uvicorn reloader, tests) so the module still loads."""
     frontend = _frontend_dir()
     if frontend.is_dir():
-        app.mount("/static", StaticFiles(directory=frontend), name="static")
+        app.mount("/static", _NoCacheStaticFiles(directory=frontend), name="static")
     else:
         log.warning("frontend dir not found at %s; /static will 404", frontend)
     # log.html references attachments as relative `media/...` links; served at

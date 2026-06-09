@@ -47,20 +47,27 @@ def should_ignore_transcription(text, lang=None):
 				'Děkujeme!',
 				'Konec.',
 				'Konec!',
+				'Tak.',
 				'Óóó!',
+				'S...',
+				'S',
+				'Hm?',
+				'Ss.',
+				'Ssss!',
 				'Ufff...',
 				'Mhmmm!',
 				'Hmm...',
-				'Tak.',
-				'KUH KUH KUH KUH KUH',
 				'Aaah!',
-				
+				'KUH KUH KUH KUH KUH',
+
 			]
 
 			# Czech patterns - substring matches
 			substring_matches = [
+				'Zdejte se na to, co myslíme.',
 				'Zdejte se na návrhu.',
 				'Zdejte se na můj kanál!',
+				'Zdejte na můj kanál!',
 				"http://johnyxcz.blogspot.com",
 				"http://johnyxcz.com",
 				"Titulky vytvořil",
@@ -70,6 +77,7 @@ def should_ignore_transcription(text, lang=None):
 				'Nechci to, nechci to, nechci to!',
 				"děkujeme za pozornost",
 				'Děkujeme za podporu!',
+				'Svět!',
 
 			]
 

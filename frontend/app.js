@@ -9,8 +9,8 @@
 // whenever log.md's mtime changes (covers PWA writes, watcher writes, manual
 // edits in the fork) and we refetch /api/log/recent on each ping.
 //
-// Q&A side-channel: after an audio note is transcribed, if "odpovídat" toggle
-// is on we POST /api/ask. The answer renders as an ephemeral bubble (NOT in
+// Q&A side-channel: after an audio note is transcribed, if "answer questions"
+// toggle is on we POST /api/ask. The answer renders as an ephemeral bubble (NOT in
 // log.md — assistant answers don't get committed). TTS, if on, reads back the
 // transcript and the answer.
 
@@ -24,7 +24,7 @@ const optTts = $("#opt-tts");
 const optAsk = $("#opt-ask");
 const optEcho = $("#opt-echo");
 const meterEl = $("#meter");
-const dotEl = $("#speaking-dot");
+const dotEl = $("#recording-dot");
 
 let micVad = null;          // MicVAD instance, created per record session (torn down on stop)
 let micStream = null;       // owned MediaStream, teed to VAD + analyser + MediaRecorder
@@ -41,9 +41,17 @@ let recOn = false;
 let mediaRec = null;
 
 // ----------------------------------------------------------------- status --
+// Statuses come in three flavours: a transient "busy" (an op is running), a
+// transient "error", and the resting baseline. The baseline isn't a constant —
+// it's "listening…" while recording, "ready" otherwise — so callers that finish
+// an op call resetStatus() rather than re-deriving that string at each site.
 function setStatus(text, kind) {
   statusEl.textContent = text;
   statusEl.className = "status" + (kind ? " " + kind : "");
+}
+
+function resetStatus() {
+  setStatus(recOn ? "listening…" : "ready");
 }
 
 // -------------------------------------------------------------------- log --
@@ -113,7 +121,7 @@ function renderEntry(e) {
   badge.textContent = fileBadge(e);
   meta.appendChild(badge);
   const ts = document.createElement("span");
-  ts.textContent = new Date(e.timestamp).toLocaleString("cs-CZ", {
+  ts.textContent = new Date(e.timestamp).toLocaleString("en-GB", {
     hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit",
   });
   meta.appendChild(ts);
@@ -132,7 +140,7 @@ function renderEntry(e) {
     b.className = "promote";
     b.dataset.testid = "promote";
     b.textContent = "→ log";
-    b.title = "Přesunout do curated log.md";
+    b.title = "Move to curated log.md";
     b.addEventListener("click", () => promoteEntry(e, b));
     meta.appendChild(b);
   }
@@ -146,7 +154,7 @@ function renderEntry(e) {
   if (e.attachments?.length) {
     const a = document.createElement("div");
     a.className = "attach";
-    a.textContent = `📎 ${e.attachments.length} přílo${e.attachments.length === 1 ? "ha" : "hy"}`;
+    a.textContent = `📎 ${e.attachments.length} attachment${e.attachments.length === 1 ? "" : "s"}`;
     div.appendChild(a);
   }
   return div;
@@ -170,9 +178,9 @@ function subscribeSSE() {
       // EventSource auto-reconnects, but if the connection is closed by the
       // server we fall through to here. Browser will retry on its own; just
       // surface a brief status so the user knows feed updates may be paused.
-      setStatus("spojení přerušeno, čekám…", "error");
+      setStatus("connection lost, waiting…", "error");
     };
-    es.onopen = () => setStatus(recOn ? "poslouchám…" : "připraveno");
+    es.onopen = () => resetStatus();
   }
   connect();
 }
@@ -188,7 +196,7 @@ textForm.addEventListener("submit", async (e) => {
     return;
   }
   textInput.value = "";
-  setStatus("ukládám…", "busy");
+  setStatus("saving…", "busy");
   const r = await fetch("/api/notes/text", {
     method: "POST",
     headers: {"content-type": "application/json"},
@@ -196,7 +204,7 @@ textForm.addEventListener("submit", async (e) => {
   });
   if (!r.ok) { setStatus("text save failed", "error"); return; }
   const entry = await r.json();
-  setStatus(recOn ? "poslouchám…" : "připraveno");
+  resetStatus();
   // Snappy local refresh — SSE will also fire, but we don't want to wait.
   fetchLog();
   if (optAsk.checked) askMaybe(body, entry.source);
@@ -305,33 +313,37 @@ async function resetMediaRec() {
   startMediaRec();
 }
 
-async function uploadBlob(blob, filename) {
-  if (!blob || blob.size === 0) return;
-  const form = new FormData();
-  form.append("file", blob, filename);
-  setStatus("přepisuji…", "busy");
+// Shared tail for both audio paths (VAD Float32→WAV and manual MediaRecorder
+// blob): POST the multipart form, drive the status bar, refresh the log, and
+// fan out to TTS/ask. The two callers differ only in how they build the body.
+async function postAudio(form) {
+  setStatus("transcribing…", "busy");
   let r;
   try {
     r = await fetch("/api/notes/audio", {method: "POST", body: form});
   } catch (e) {
-    setStatus("upload selhal", "error");
+    setStatus("upload failed", "error");
     return;
   }
-  if (r.status === 204) {
-    setStatus(recOn ? "poslouchám…" : "připraveno");
-    return;
-  }
+  if (r.status === 204) { resetStatus(); return; }
   if (!r.ok) {
     setStatus(`audio: HTTP ${r.status}`, "error");
     return;
   }
   const entry = await r.json();
-  setStatus(recOn ? "poslouchám…" : "připraveno");
+  resetStatus();
   fetchLog();
   if (entry.body) {
     if (optTts.checked) speakBack(entry.body);
     if (optAsk.checked) askMaybe(entry.body, entry.source);
   }
+}
+
+async function uploadBlob(blob, filename) {
+  if (!blob || blob.size === 0) return;
+  const form = new FormData();
+  form.append("file", blob, filename);
+  await postAudio(form);
 }
 
 // Manual flush: take whatever MediaRecorder has captured since the last
@@ -351,34 +363,12 @@ async function uploadAudio(float32) {
   const wav = floatToWav(normalized, 16000);
   const form = new FormData();
   form.append("file", wav, "rec.wav");
-  setStatus("přepisuji…", "busy");
-  let r;
-  try {
-    r = await fetch("/api/notes/audio", {method: "POST", body: form});
-  } catch (e) {
-    setStatus("upload selhal", "error");
-    return;
-  }
-  if (r.status === 204) {
-    setStatus(recOn ? "poslouchám…" : "připraveno");
-    return;
-  }
-  if (!r.ok) {
-    setStatus(`audio: HTTP ${r.status}`, "error");
-    return;
-  }
-  const entry = await r.json();
-  setStatus(recOn ? "poslouchám…" : "připraveno");
-  fetchLog();
-  if (entry.body) {
-    if (optTts.checked) speakBack(entry.body);
-    if (optAsk.checked) askMaybe(entry.body, entry.source);
-  }
+  await postAudio(form);
 }
 
 // Scope: live oscilloscope drawn from analyser's time-domain data. Cheap and
 // honestly shows "the mic is hearing you" — silent room → flat line, voice →
-// wiggle. Not a level meter; pair with the speaking-dot (VAD-driven) for the
+// wiggle. Not a level meter; pair with the recording-dot (VAD-driven) for the
 // "you crossed the speech threshold" signal.
 function _sizeMeterToDisplay() {
   // The canvas grew via CSS (flex:1 in the text-form row); resync its drawing
@@ -432,13 +422,13 @@ function stopMeter() {
 
 async function startRecording() {
   if (!window.vad?.MicVAD) {
-    setStatus("VAD knihovna se nenačetla", "error");
+    setStatus("VAD library failed to load", "error");
     return;
   }
   try {
     micStream = await navigator.mediaDevices.getUserMedia({audio: true});
   } catch (e) {
-    setStatus(`mikrofon: ${e.message || e}`, "error");
+    setStatus(`microphone: ${e.message || e}`, "error");
     return;
   }
   // Tap an analyser off the stream BEFORE passing it to VAD, so the scope
@@ -470,11 +460,11 @@ async function startRecording() {
         // playing, shut both up the moment the user starts. Stop, don't pause.
         stopTts();
         stopEcho();
-        dotEl.classList.add("on");
-        setStatus("mluvíš…", "busy");
+        dotEl?.classList.add("on");  // cosmetic dot — never let it block the status/upload path
+        setStatus("recording…", "busy");  // VAD detected your voice — capturing this utterance
       },
       onSpeechEnd: (audio) => {
-        dotEl.classList.remove("on");
+        dotEl?.classList.remove("on");
         if (optEcho.checked) playRecording(audio, 16000);
         uploadAudio(audio);
         // VAD just consumed this stretch of audio; restart MediaRecorder so
@@ -482,7 +472,7 @@ async function startRecording() {
         // when the user later hits "send".
         resetMediaRec();
       },
-      onVADMisfire: () => { dotEl.classList.remove("on"); setStatus(recOn ? "poslouchám…" : "připraveno"); },
+      onVADMisfire: () => { dotEl?.classList.remove("on"); resetStatus(); },
     });
     micVad.start();
   } catch (e) {
@@ -495,7 +485,7 @@ async function startRecording() {
   document.body.classList.add("rec-on");  // swaps text input ↔ meter via CSS
   recBtn.classList.add("active");
   recBtn.textContent = "⏹ stop";
-  setStatus("poslouchám…");
+  resetStatus();  // recOn is now true → "listening…"
   startMeter();
   startMediaRec();
 }
@@ -522,14 +512,14 @@ function stopRecording() {
   recOn = false;
   document.body.classList.remove("rec-on");
   recBtn.classList.remove("active");
-  recBtn.textContent = "🎙 záznam";
-  dotEl.classList.remove("on");
+  recBtn.textContent = "🎙 record";
+  dotEl?.classList.remove("on");
   stopMeter();
   // Cancel semantics: discard any in-flight MediaRecorder buffer. The user
   // chose stop, not send.
   if (mediaRec) { try { mediaRec.stop(); } catch {} mediaRec = null; }
   teardownAudio();
-  setStatus("připraveno");
+  resetStatus();  // recOn is now false → "ready"
 }
 
 recBtn.addEventListener("click", async () => {

@@ -27,7 +27,10 @@ def _setup_logging(verbose: bool) -> None:
     )
     # Third-party libraries spam DEBUG (httpx/httpcore log every header). Keep them quiet
     # even under -v; only komventory's loggers should respond to the verbose flag.
-    for noisy in ("httpx", "httpcore", "urllib3", "filelock", "faster_whisper"):
+    # LiteLLM double-logs every call at INFO (its own handler + root propagation) and
+    # we surface the meaningful failure reasons ourselves from qa.py, so silence its
+    # INFO chatter here; its banner is suppressed separately via suppress_debug_info.
+    for noisy in ("httpx", "httpcore", "urllib3", "filelock", "faster_whisper", "LiteLLM"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 

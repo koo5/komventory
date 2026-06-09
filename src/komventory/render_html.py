@@ -93,7 +93,7 @@ def _parse_entries(text: str) -> list[dict]:
 
 
 _PAGE_TEMPLATE = """<!DOCTYPE html>
-<html lang="cs">
+<html lang="{lang}">
 <head>
 <meta charset="utf-8">
 <title>Komventory</title>
@@ -211,6 +211,7 @@ def render(log_md_path: Path, out_path: Path | None = None) -> Path:
         )
 
     page = _PAGE_TEMPLATE.format(
+        lang=config.LANG.code,
         count=len(entries),
         rendered_at=datetime.now(tz=config.TIMEZONE).strftime("%Y-%m-%d %H:%M %Z"),
         articles="\n".join(articles),

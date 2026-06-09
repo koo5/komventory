@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="cs">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -11,7 +11,7 @@
 <body>
   <header>
     <h1>komventory</h1>
-    <a href="/log.html" data-testid="full-log-link" target="_blank" rel="noopener">celý log →</a>
+    <a href="/log.html" data-testid="full-log-link" target="_blank" rel="noopener">full log →</a>
   </header>
 
   <main id="log" data-testid="log"></main>
@@ -22,30 +22,30 @@
         type="text"
         id="text-input"
         data-testid="text-input"
-        placeholder="napiš poznámku nebo otázku…"
+        placeholder="write a note or question…"
         autocomplete="off"
         autocapitalize="sentences">
-      <canvas id="meter" data-testid="meter" width="240" height="36" aria-label="vstupní signál"></canvas>
+      <canvas id="meter" data-testid="meter" width="240" height="36" aria-label="input signal"></canvas>
       <button type="submit" data-testid="send-text">↵</button>
     </form>
 
     <div class="controls">
-      <button id="rec-toggle" data-testid="rec-toggle" class="rec">🎙 záznam</button>
-      <span id="speaking-dot" data-testid="speaking-dot" class="dot" title="mluvíš"></span>
+      <button id="rec-toggle" data-testid="rec-toggle" class="rec">🎙 record</button>
+      <span id="recording-dot" data-testid="recording-dot" class="dot" title="recording"></span>
       <label class="opt">
         <input type="checkbox" id="opt-tts" data-testid="opt-tts" checked>
-        <span>mluvit zpět</span>
+        <span>speak back</span>
       </label>
       <label class="opt">
         <input type="checkbox" id="opt-ask" data-testid="opt-ask" checked>
-        <span>odpovídat na otázky</span>
+        <span>answer questions</span>
       </label>
       <label class="opt">
-        <input type="checkbox" id="opt-echo" data-testid="opt-echo">
-        <span>přehrát nahrávku</span>
+        <input type="checkbox" id="opt-echo" data-testid="opt-echo" checked>
+        <span>play recording</span>
       </label>
       |
-      <span class="status" id="status" data-testid="status">připraveno</span>
+      <span class="status" id="status" data-testid="status">ready</span>
     </div>
   </footer>
 

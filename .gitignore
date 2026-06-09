@@ -22,3 +22,6 @@ data/inbox/imports/*
 !data/inbox/imports/.gitkeep
 .claude/
 .dev_intention
+
+# Local compose overrides (KOMVENTORY_LANG etc). .env.example is the tracked template.
+.env
